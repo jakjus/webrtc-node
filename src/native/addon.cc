@@ -1,0 +1,1148 @@
+#include <napi.h>
+#include <rtc/rtc.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstring>
+#include <cmath>
+#include <iomanip>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/ec.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
+
+namespace {
+
+class NativeDataChannel;
+struct ChannelBinding;
+struct EventDispatcher;
+struct PeerBinding;
+
+std::atomic<int> nextChannelId{1};
+
+std::string ToString(rtc::PeerConnection::State state) {
+	switch (state) {
+	case rtc::PeerConnection::State::New:
+		return "new";
+	case rtc::PeerConnection::State::Connecting:
+		return "connecting";
+	case rtc::PeerConnection::State::Connected:
+		return "connected";
+	case rtc::PeerConnection::State::Disconnected:
+		return "disconnected";
+	case rtc::PeerConnection::State::Failed:
+		return "failed";
+	case rtc::PeerConnection::State::Closed:
+		return "closed";
+	}
+	return "closed";
+}
+
+std::string ToString(rtc::PeerConnection::IceState state) {
+	switch (state) {
+	case rtc::PeerConnection::IceState::New:
+		return "new";
+	case rtc::PeerConnection::IceState::Checking:
+		return "checking";
+	case rtc::PeerConnection::IceState::Connected:
+		return "connected";
+	case rtc::PeerConnection::IceState::Completed:
+		return "completed";
+	case rtc::PeerConnection::IceState::Failed:
+		return "failed";
+	case rtc::PeerConnection::IceState::Disconnected:
+		return "disconnected";
+	case rtc::PeerConnection::IceState::Closed:
+		return "closed";
+	}
+	return "closed";
+}
+
+std::string ToString(rtc::PeerConnection::GatheringState state) {
+	switch (state) {
+	case rtc::PeerConnection::GatheringState::New:
+		return "new";
+	case rtc::PeerConnection::GatheringState::InProgress:
+		return "gathering";
+	case rtc::PeerConnection::GatheringState::Complete:
+		return "complete";
+	}
+	return "complete";
+}
+
+std::string ToString(rtc::PeerConnection::SignalingState state) {
+	switch (state) {
+	case rtc::PeerConnection::SignalingState::Stable:
+		return "stable";
+	case rtc::PeerConnection::SignalingState::HaveLocalOffer:
+		return "have-local-offer";
+	case rtc::PeerConnection::SignalingState::HaveRemoteOffer:
+		return "have-remote-offer";
+	case rtc::PeerConnection::SignalingState::HaveLocalPranswer:
+		return "have-local-pranswer";
+	case rtc::PeerConnection::SignalingState::HaveRemotePranswer:
+		return "have-remote-pranswer";
+	}
+	return "stable";
+}
+
+rtc::Description::Type ParseDescriptionType(const std::string &type) {
+	if (type.empty())
+		return rtc::Description::Type::Unspec;
+	return rtc::Description::stringToType(type);
+}
+
+Napi::Object DescriptionToObject(Napi::Env env, const rtc::Description &description) {
+	Napi::Object result = Napi::Object::New(env);
+	result.Set("type", description.typeString());
+	result.Set("sdp", std::string(description));
+	return result;
+}
+
+rtc::LocalDescriptionInit ParseLocalDescriptionInit(const Napi::Value &value) {
+	rtc::LocalDescriptionInit init;
+	if (!value.IsObject())
+		return init;
+
+	Napi::Object object = value.As<Napi::Object>();
+	if (object.Has("iceUfrag") && !object.Get("iceUfrag").IsNull() &&
+	    !object.Get("iceUfrag").IsUndefined())
+		init.iceUfrag = object.Get("iceUfrag").ToString().Utf8Value();
+	if (object.Has("icePwd") && !object.Get("icePwd").IsNull() &&
+	    !object.Get("icePwd").IsUndefined())
+		init.icePwd = object.Get("icePwd").ToString().Utf8Value();
+	return init;
+}
+
+std::string OpenSslErrorString() {
+	unsigned long error = ERR_get_error();
+	if (!error)
+		return "unknown OpenSSL error";
+	char buffer[256];
+	ERR_error_string_n(error, buffer, sizeof(buffer));
+	return buffer;
+}
+
+void CheckOpenSsl(int result, const char *message) {
+	if (result != 1)
+		throw std::runtime_error(std::string(message) + ": " + OpenSslErrorString());
+}
+
+void CheckOpenSslPositive(int result, const char *message) {
+	if (result <= 0)
+		throw std::runtime_error(std::string(message) + ": " + OpenSslErrorString());
+}
+
+struct CertificateMaterial {
+	std::string certificatePem;
+	std::string keyPem;
+	std::string fingerprint;
+};
+
+using BioPtr = std::unique_ptr<BIO, decltype(&BIO_free)>;
+using EvpPkeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+using EvpPkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>;
+using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
+
+std::string BioToString(BIO *bio) {
+	BUF_MEM *memory = nullptr;
+	BIO_get_mem_ptr(bio, &memory);
+	if (!memory || !memory->data)
+		return {};
+	return std::string(memory->data, memory->length);
+}
+
+EvpPkeyPtr GenerateEcKey() {
+	EvpPkeyCtxPtr parameterContext(EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr),
+	                               EVP_PKEY_CTX_free);
+	if (!parameterContext)
+		throw std::runtime_error("Failed to allocate EC parameter context");
+	CheckOpenSsl(EVP_PKEY_paramgen_init(parameterContext.get()), "Failed to initialize EC parameters");
+	CheckOpenSsl(EVP_PKEY_CTX_set_ec_paramgen_curve_nid(parameterContext.get(),
+	                                                    NID_X9_62_prime256v1),
+	             "Failed to set EC curve");
+
+	EVP_PKEY *parametersRaw = nullptr;
+	CheckOpenSsl(EVP_PKEY_paramgen(parameterContext.get(), &parametersRaw),
+	             "Failed to generate EC parameters");
+	EvpPkeyPtr parameters(parametersRaw, EVP_PKEY_free);
+
+	EvpPkeyCtxPtr keyContext(EVP_PKEY_CTX_new(parameters.get(), nullptr), EVP_PKEY_CTX_free);
+	if (!keyContext)
+		throw std::runtime_error("Failed to allocate EC key context");
+	CheckOpenSsl(EVP_PKEY_keygen_init(keyContext.get()), "Failed to initialize EC key generation");
+
+	EVP_PKEY *keyRaw = nullptr;
+	CheckOpenSsl(EVP_PKEY_keygen(keyContext.get(), &keyRaw), "Failed to generate EC key");
+	return EvpPkeyPtr(keyRaw, EVP_PKEY_free);
+}
+
+EvpPkeyPtr GenerateRsaKey(uint32_t modulusLength) {
+	EvpPkeyCtxPtr keyContext(EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr), EVP_PKEY_CTX_free);
+	if (!keyContext)
+		throw std::runtime_error("Failed to allocate RSA key context");
+	CheckOpenSsl(EVP_PKEY_keygen_init(keyContext.get()), "Failed to initialize RSA key generation");
+	CheckOpenSsl(EVP_PKEY_CTX_set_rsa_keygen_bits(keyContext.get(), static_cast<int>(modulusLength)),
+	             "Failed to set RSA modulus length");
+
+	EVP_PKEY *keyRaw = nullptr;
+	CheckOpenSsl(EVP_PKEY_keygen(keyContext.get(), &keyRaw), "Failed to generate RSA key");
+	return EvpPkeyPtr(keyRaw, EVP_PKEY_free);
+}
+
+long ExpirationSecondsFromMilliseconds(double expiresMs) {
+	if (expiresMs <= 0)
+		return 0;
+	double seconds = std::ceil(expiresMs / 1000.0);
+	constexpr double maxLongSeconds = 2147483647.0;
+	if (seconds > maxLongSeconds)
+		seconds = maxLongSeconds;
+	return static_cast<long>(seconds);
+}
+
+std::string FingerprintForCertificate(X509 *certificate) {
+	unsigned char digest[EVP_MAX_MD_SIZE];
+	unsigned int digestLength = 0;
+	CheckOpenSsl(X509_digest(certificate, EVP_sha256(), digest, &digestLength),
+	             "Failed to compute certificate fingerprint");
+
+	std::ostringstream output;
+	output << std::hex << std::nouppercase << std::setfill('0');
+	for (unsigned int i = 0; i < digestLength; ++i) {
+		if (i)
+			output << ':';
+		output << std::setw(2) << static_cast<unsigned int>(digest[i]);
+	}
+	return output.str();
+}
+
+CertificateMaterial GenerateCertificateMaterial(const std::string &algorithm, uint32_t modulusLength,
+                                                double expiresMs) {
+	EvpPkeyPtr key = algorithm == "RSASSA-PKCS1-v1_5" ? GenerateRsaKey(modulusLength)
+	                                                   : GenerateEcKey();
+	X509Ptr certificate(X509_new(), X509_free);
+	if (!certificate)
+		throw std::runtime_error("Failed to allocate X509 certificate");
+
+	CheckOpenSsl(X509_set_version(certificate.get(), 2), "Failed to set certificate version");
+	auto serial = std::chrono::system_clock::now().time_since_epoch().count();
+	ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), static_cast<long>(serial & 0x7fffffff));
+	X509_gmtime_adj(X509_get_notBefore(certificate.get()), -3600);
+	X509_gmtime_adj(X509_get_notAfter(certificate.get()),
+	                ExpirationSecondsFromMilliseconds(expiresMs));
+	CheckOpenSsl(X509_set_pubkey(certificate.get(), key.get()), "Failed to set certificate public key");
+
+	X509_NAME *name = X509_get_subject_name(certificate.get());
+	CheckOpenSsl(X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+	                                        reinterpret_cast<const unsigned char *>("webrtc-node"),
+	                                        -1, -1, 0),
+	             "Failed to set certificate subject");
+	CheckOpenSsl(X509_set_issuer_name(certificate.get(), name), "Failed to set certificate issuer");
+	CheckOpenSslPositive(X509_sign(certificate.get(), key.get(), EVP_sha256()),
+	                     "Failed to sign certificate");
+
+	BioPtr certificateBio(BIO_new(BIO_s_mem()), BIO_free);
+	BioPtr keyBio(BIO_new(BIO_s_mem()), BIO_free);
+	if (!certificateBio || !keyBio)
+		throw std::runtime_error("Failed to allocate PEM BIO");
+	CheckOpenSsl(PEM_write_bio_X509(certificateBio.get(), certificate.get()),
+	             "Failed to encode certificate PEM");
+	CheckOpenSsl(PEM_write_bio_PrivateKey(keyBio.get(), key.get(), nullptr, nullptr, 0, nullptr,
+	                                      nullptr),
+	             "Failed to encode private key PEM");
+
+	return {BioToString(certificateBio.get()), BioToString(keyBio.get()),
+	        FingerprintForCertificate(certificate.get())};
+}
+
+struct ChannelOptions {
+	bool ordered = true;
+	bool negotiated = false;
+	std::optional<uint16_t> id;
+	std::optional<uint32_t> maxPacketLifeTime;
+	std::optional<uint32_t> maxRetransmits;
+	std::string protocol;
+};
+
+struct NativeEvent {
+	std::string target;
+	std::string type;
+	int channelId = 0;
+	std::shared_ptr<ChannelBinding> channel;
+	std::string state;
+	std::string descriptionType;
+	std::string sdp;
+	std::string candidate;
+	std::string mid;
+	std::string error;
+	bool binary = false;
+	std::string text;
+	std::vector<uint8_t> bytes;
+};
+
+struct EventDispatcher : public std::enable_shared_from_this<EventDispatcher> {
+	static std::shared_ptr<EventDispatcher> Create(Napi::Env env, Napi::Function callback) {
+		return std::shared_ptr<EventDispatcher>(new EventDispatcher(env, callback));
+	}
+
+	~EventDispatcher() { Close(); }
+
+	void Emit(NativeEvent event) {
+		if (!active.load())
+			return;
+
+		auto *queued = new NativeEvent(std::move(event));
+		napi_status status = tsfn.NonBlockingCall(queued, Dispatch);
+		if (status != napi_ok)
+			delete queued;
+	}
+
+	void Close() {
+		if (active.exchange(false))
+			tsfn.Release();
+	}
+
+private:
+	EventDispatcher(Napi::Env env, Napi::Function callback)
+	    : tsfn(Napi::ThreadSafeFunction::New(env, callback, "webrtc-node events", 0, 1)) {}
+
+	static void Dispatch(Napi::Env env, Napi::Function callback, NativeEvent *event);
+
+	std::atomic<bool> active{true};
+	Napi::ThreadSafeFunction tsfn;
+};
+
+struct ChannelBinding : public std::enable_shared_from_this<ChannelBinding> {
+	static std::shared_ptr<ChannelBinding> Create(std::shared_ptr<rtc::DataChannel> dataChannel,
+	                                              std::shared_ptr<EventDispatcher> dispatcher,
+	                                              ChannelOptions options) {
+		auto binding = std::shared_ptr<ChannelBinding>(
+		    new ChannelBinding(std::move(dataChannel), std::move(dispatcher), std::move(options)));
+		binding->AttachCallbacks();
+		return binding;
+	}
+
+	static ChannelOptions IncomingOptions(const std::shared_ptr<rtc::DataChannel> &dataChannel) {
+		ChannelOptions options;
+		options.negotiated = false;
+		options.protocol = dataChannel->protocol();
+		rtc::Reliability reliability = dataChannel->reliability();
+		options.ordered = !reliability.unordered;
+		if (reliability.maxPacketLifeTime)
+			options.maxPacketLifeTime =
+			    static_cast<uint32_t>(reliability.maxPacketLifeTime->count());
+		if (reliability.maxRetransmits)
+			options.maxRetransmits = static_cast<uint32_t>(*reliability.maxRetransmits);
+		return options;
+	}
+
+	void Close() {
+		auto dc = dataChannel;
+		if (dc)
+			dc->close();
+	}
+
+	void Destroy() {
+		auto dc = dataChannel;
+		if (dc)
+			dc->resetCallbacks();
+	}
+
+	const int id;
+	std::shared_ptr<rtc::DataChannel> dataChannel;
+	std::shared_ptr<EventDispatcher> dispatcher;
+	ChannelOptions options;
+
+private:
+	ChannelBinding(std::shared_ptr<rtc::DataChannel> dataChannel_,
+	               std::shared_ptr<EventDispatcher> dispatcher_, ChannelOptions options_)
+	    : id(nextChannelId.fetch_add(1)), dataChannel(std::move(dataChannel_)),
+	      dispatcher(std::move(dispatcher_)), options(std::move(options_)) {}
+
+	void AttachCallbacks() {
+		std::weak_ptr<ChannelBinding> weak = shared_from_this();
+
+		dataChannel->onOpen([weak]() {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "datachannel";
+				event.type = "open";
+				event.channelId = self->id;
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		dataChannel->onClosed([weak]() {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "datachannel";
+				event.type = "close";
+				event.channelId = self->id;
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		dataChannel->onError([weak](std::string error) {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "datachannel";
+				event.type = "error";
+				event.channelId = self->id;
+				event.error = std::move(error);
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		dataChannel->onBufferedAmountLow([weak]() {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "datachannel";
+				event.type = "bufferedamountlow";
+				event.channelId = self->id;
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		dataChannel->onMessage([weak](rtc::message_variant data) {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "datachannel";
+				event.type = "message";
+				event.channelId = self->id;
+				if (std::holds_alternative<std::string>(data)) {
+					event.binary = false;
+					event.text = std::get<std::string>(std::move(data));
+				} else {
+					event.binary = true;
+					const auto &binary = std::get<rtc::binary>(data);
+					event.bytes.reserve(binary.size());
+					for (std::byte value : binary)
+						event.bytes.push_back(std::to_integer<uint8_t>(value));
+				}
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+	}
+};
+
+class NativeDataChannel : public Napi::ObjectWrap<NativeDataChannel> {
+public:
+	static Napi::FunctionReference constructor;
+
+	static void Init(Napi::Env env, Napi::Object exports) {
+		Napi::Function func = DefineClass(
+		    env, "NativeDataChannel",
+		    {
+		        InstanceMethod("sendString", &NativeDataChannel::SendString),
+		        InstanceMethod("sendBinary", &NativeDataChannel::SendBinary),
+		        InstanceMethod("close", &NativeDataChannel::Close),
+		        InstanceMethod("setBufferedAmountLowThreshold",
+		                       &NativeDataChannel::SetBufferedAmountLowThreshold),
+		        InstanceAccessor("bindingId", &NativeDataChannel::GetBindingId, nullptr),
+		        InstanceAccessor("id", &NativeDataChannel::GetId, nullptr),
+		        InstanceAccessor("label", &NativeDataChannel::GetLabel, nullptr),
+		        InstanceAccessor("protocol", &NativeDataChannel::GetProtocol, nullptr),
+		        InstanceAccessor("ordered", &NativeDataChannel::GetOrdered, nullptr),
+		        InstanceAccessor("negotiated", &NativeDataChannel::GetNegotiated, nullptr),
+		        InstanceAccessor("maxPacketLifeTime", &NativeDataChannel::GetMaxPacketLifeTime,
+		                         nullptr),
+		        InstanceAccessor("maxRetransmits", &NativeDataChannel::GetMaxRetransmits, nullptr),
+		        InstanceAccessor("bufferedAmount", &NativeDataChannel::GetBufferedAmount, nullptr),
+		        InstanceAccessor("isOpen", &NativeDataChannel::GetIsOpen, nullptr),
+		        InstanceAccessor("isClosed", &NativeDataChannel::GetIsClosed, nullptr),
+		        InstanceAccessor("maxMessageSize", &NativeDataChannel::GetMaxMessageSize, nullptr),
+		    });
+		constructor = Napi::Persistent(func);
+		constructor.SuppressDestruct();
+		exports.Set("NativeDataChannel", func);
+	}
+
+	static Napi::Object NewInstance(Napi::Env env, std::shared_ptr<ChannelBinding> binding) {
+		auto *payload = new std::shared_ptr<ChannelBinding>(std::move(binding));
+		auto external = Napi::External<std::shared_ptr<ChannelBinding>>::New(
+		    env, payload, [](Napi::Env, std::shared_ptr<ChannelBinding> *data) { delete data; });
+		return constructor.New({external});
+	}
+
+	NativeDataChannel(const Napi::CallbackInfo &info) : Napi::ObjectWrap<NativeDataChannel>(info) {
+		if (!info[0].IsExternal())
+			throw Napi::TypeError::New(info.Env(), "NativeDataChannel requires a native binding");
+		binding_ = *info[0].As<Napi::External<std::shared_ptr<ChannelBinding>>>().Data();
+	}
+
+private:
+	std::shared_ptr<ChannelBinding> binding_;
+
+	Napi::Value SendString(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			std::string value = info[0].ToString().Utf8Value();
+			bool sent = binding_->dataChannel->send(value);
+			return Napi::Boolean::New(env, sent);
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value SendBinary(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			if (!info[0].IsTypedArray())
+				throw std::invalid_argument("sendBinary expects a Uint8Array");
+			auto view = info[0].As<Napi::Uint8Array>();
+			const auto *bytes = reinterpret_cast<const rtc::byte *>(view.Data());
+			bool sent = binding_->dataChannel->send(bytes, view.ByteLength());
+			return Napi::Boolean::New(env, sent);
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value Close(const Napi::CallbackInfo &info) {
+		try {
+			binding_->Close();
+		} catch (const std::exception &e) {
+			Napi::Error::New(info.Env(), e.what()).ThrowAsJavaScriptException();
+		}
+		return info.Env().Undefined();
+	}
+
+	Napi::Value SetBufferedAmountLowThreshold(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			size_t value = info[0].ToNumber().Int64Value();
+			binding_->dataChannel->setBufferedAmountLowThreshold(value);
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+		}
+		return env.Undefined();
+	}
+
+	Napi::Value GetBindingId(const Napi::CallbackInfo &info) {
+		return Napi::Number::New(info.Env(), binding_->id);
+	}
+
+	Napi::Value GetId(const Napi::CallbackInfo &info) {
+		auto id = binding_->dataChannel->id();
+		if (!id)
+			return info.Env().Null();
+		return Napi::Number::New(info.Env(), *id);
+	}
+
+	Napi::Value GetLabel(const Napi::CallbackInfo &info) {
+		return Napi::String::New(info.Env(), binding_->dataChannel->label());
+	}
+
+	Napi::Value GetProtocol(const Napi::CallbackInfo &info) {
+		return Napi::String::New(info.Env(), binding_->dataChannel->protocol());
+	}
+
+	Napi::Value GetOrdered(const Napi::CallbackInfo &info) {
+		return Napi::Boolean::New(info.Env(), binding_->options.ordered);
+	}
+
+	Napi::Value GetNegotiated(const Napi::CallbackInfo &info) {
+		return Napi::Boolean::New(info.Env(), binding_->options.negotiated);
+	}
+
+	Napi::Value GetMaxPacketLifeTime(const Napi::CallbackInfo &info) {
+		if (!binding_->options.maxPacketLifeTime)
+			return info.Env().Null();
+		return Napi::Number::New(info.Env(), *binding_->options.maxPacketLifeTime);
+	}
+
+	Napi::Value GetMaxRetransmits(const Napi::CallbackInfo &info) {
+		if (!binding_->options.maxRetransmits)
+			return info.Env().Null();
+		return Napi::Number::New(info.Env(), *binding_->options.maxRetransmits);
+	}
+
+	Napi::Value GetBufferedAmount(const Napi::CallbackInfo &info) {
+		return Napi::Number::New(info.Env(), binding_->dataChannel->bufferedAmount());
+	}
+
+	Napi::Value GetIsOpen(const Napi::CallbackInfo &info) {
+		return Napi::Boolean::New(info.Env(), binding_->dataChannel->isOpen());
+	}
+
+	Napi::Value GetIsClosed(const Napi::CallbackInfo &info) {
+		return Napi::Boolean::New(info.Env(), binding_->dataChannel->isClosed());
+	}
+
+	Napi::Value GetMaxMessageSize(const Napi::CallbackInfo &info) {
+		return Napi::Number::New(info.Env(), binding_->dataChannel->maxMessageSize());
+	}
+};
+
+Napi::FunctionReference NativeDataChannel::constructor;
+
+void EventDispatcher::Dispatch(Napi::Env env, Napi::Function callback, NativeEvent *event) {
+	std::unique_ptr<NativeEvent> scoped(event);
+
+	Napi::Object object = Napi::Object::New(env);
+	object.Set("target", scoped->target);
+	object.Set("type", scoped->type);
+	if (scoped->channelId)
+		object.Set("channelId", scoped->channelId);
+	if (!scoped->state.empty())
+		object.Set("state", scoped->state);
+	if (!scoped->descriptionType.empty()) {
+		Napi::Object description = Napi::Object::New(env);
+		description.Set("type", scoped->descriptionType);
+		description.Set("sdp", scoped->sdp);
+		object.Set("description", description);
+	}
+	if (!scoped->candidate.empty() || !scoped->mid.empty()) {
+		Napi::Object candidate = Napi::Object::New(env);
+		candidate.Set("candidate", scoped->candidate);
+		if (!scoped->mid.empty())
+			candidate.Set("sdpMid", scoped->mid);
+		object.Set("candidate", candidate);
+	}
+	if (!scoped->error.empty())
+		object.Set("error", scoped->error);
+	if (scoped->type == "message") {
+		object.Set("binary", scoped->binary);
+		if (scoped->binary) {
+			Napi::ArrayBuffer buffer = Napi::ArrayBuffer::New(env, scoped->bytes.size());
+			if (!scoped->bytes.empty())
+				std::memcpy(buffer.Data(), scoped->bytes.data(), scoped->bytes.size());
+			object.Set("data", buffer);
+		} else {
+			object.Set("data", scoped->text);
+		}
+	}
+	if (scoped->channel) {
+		object.Set("channel", NativeDataChannel::NewInstance(env, scoped->channel));
+		object.Set("channelId", scoped->channel->id);
+		object.Set("channelReadyState", "open");
+	}
+
+	callback.Call({object});
+}
+
+Napi::Object CandidateToObject(Napi::Env env, const rtc::Candidate &candidate) {
+	Napi::Object object = Napi::Object::New(env);
+	object.Set("candidate", candidate.candidate());
+	object.Set("sdpMid", candidate.mid());
+	return object;
+}
+
+rtc::Configuration ParseConfiguration(const Napi::CallbackInfo &info) {
+	rtc::Configuration config;
+	config.disableAutoNegotiation = true;
+	config.disableAutoGathering = false;
+
+	if (info.Length() == 0 || !info[0].IsObject())
+		return config;
+
+	Napi::Object input = info[0].As<Napi::Object>();
+	if (input.Has("iceTransportPolicy")) {
+		std::string policy = input.Get("iceTransportPolicy").ToString().Utf8Value();
+		if (policy == "relay")
+			config.iceTransportPolicy = rtc::TransportPolicy::Relay;
+	}
+	if (input.Has("iceServers") && input.Get("iceServers").IsArray()) {
+		Napi::Array servers = input.Get("iceServers").As<Napi::Array>();
+		for (uint32_t i = 0; i < servers.Length(); ++i) {
+			Napi::Value value = servers.Get(i);
+			if (!value.IsObject())
+				continue;
+			Napi::Object server = value.As<Napi::Object>();
+			if (!server.Has("urls"))
+				continue;
+			Napi::Value urls = server.Get("urls");
+			if (urls.IsArray()) {
+				Napi::Array urlArray = urls.As<Napi::Array>();
+				for (uint32_t j = 0; j < urlArray.Length(); ++j) {
+					if (urlArray.Get(j).IsString())
+						config.iceServers.emplace_back(urlArray.Get(j).ToString().Utf8Value());
+				}
+			} else if (urls.IsString()) {
+				config.iceServers.emplace_back(urls.ToString().Utf8Value());
+			}
+		}
+	}
+	if (input.Has("certificates") && input.Get("certificates").IsArray()) {
+		Napi::Array certificates = input.Get("certificates").As<Napi::Array>();
+		if (certificates.Length() > 0 && certificates.Get(uint32_t{0}).IsObject()) {
+			Napi::Object certificate = certificates.Get(uint32_t{0}).As<Napi::Object>();
+			if (certificate.Has("_certificatePem") && certificate.Has("_keyPem") &&
+			    certificate.Get("_certificatePem").IsString() &&
+			    certificate.Get("_keyPem").IsString()) {
+				config.certificatePemFile = certificate.Get("_certificatePem").ToString().Utf8Value();
+				config.keyPemFile = certificate.Get("_keyPem").ToString().Utf8Value();
+			}
+		}
+	}
+
+	return config;
+}
+
+ChannelOptions ParseChannelOptions(const Napi::Value &value) {
+	ChannelOptions options;
+	if (!value.IsObject())
+		return options;
+
+	Napi::Object input = value.As<Napi::Object>();
+	if (input.Has("ordered") && input.Get("ordered").IsBoolean())
+		options.ordered = input.Get("ordered").ToBoolean().Value();
+	if (input.Has("negotiated") && input.Get("negotiated").IsBoolean())
+		options.negotiated = input.Get("negotiated").ToBoolean().Value();
+	if (input.Has("protocol") && !input.Get("protocol").IsUndefined() &&
+	    !input.Get("protocol").IsNull())
+		options.protocol = input.Get("protocol").ToString().Utf8Value();
+	if (input.Has("id") && !input.Get("id").IsUndefined() && !input.Get("id").IsNull())
+		options.id = static_cast<uint16_t>(input.Get("id").ToNumber().Uint32Value());
+	if (input.Has("maxPacketLifeTime") && !input.Get("maxPacketLifeTime").IsUndefined() &&
+	    !input.Get("maxPacketLifeTime").IsNull())
+		options.maxPacketLifeTime = input.Get("maxPacketLifeTime").ToNumber().Uint32Value();
+	if (input.Has("maxRetransmits") && !input.Get("maxRetransmits").IsUndefined() &&
+	    !input.Get("maxRetransmits").IsNull())
+		options.maxRetransmits = input.Get("maxRetransmits").ToNumber().Uint32Value();
+	if (options.maxPacketLifeTime && options.maxRetransmits)
+		throw std::invalid_argument("maxPacketLifeTime and maxRetransmits are mutually exclusive");
+	return options;
+}
+
+rtc::DataChannelInit ToRtcInit(const ChannelOptions &options) {
+	rtc::DataChannelInit init;
+	init.negotiated = options.negotiated;
+	init.protocol = options.protocol;
+	if (options.id)
+		init.id = *options.id;
+	init.reliability.unordered = !options.ordered;
+	if (options.maxPacketLifeTime)
+		init.reliability.maxPacketLifeTime = std::chrono::milliseconds(*options.maxPacketLifeTime);
+	if (options.maxRetransmits)
+		init.reliability.maxRetransmits = *options.maxRetransmits;
+	return init;
+}
+
+struct PeerBinding : public std::enable_shared_from_this<PeerBinding> {
+	static std::shared_ptr<PeerBinding> Create(rtc::Configuration config,
+	                                           std::shared_ptr<EventDispatcher> dispatcher) {
+		auto binding =
+		    std::shared_ptr<PeerBinding>(new PeerBinding(std::move(config), std::move(dispatcher)));
+		binding->AttachCallbacks();
+		return binding;
+	}
+
+	std::shared_ptr<ChannelBinding> AddChannel(std::shared_ptr<rtc::DataChannel> dataChannel,
+	                                           ChannelOptions options) {
+		auto channel = ChannelBinding::Create(std::move(dataChannel), dispatcher, std::move(options));
+		std::lock_guard<std::mutex> lock(channelsMutex);
+		channels[channel->id] = channel;
+		return channel;
+	}
+
+	void ClosePeer() {
+		if (closed.exchange(true))
+			return;
+		dispatcher->Close();
+		{
+			std::lock_guard<std::mutex> lock(channelsMutex);
+			for (auto &[_, channel] : channels)
+				channel->Destroy();
+		}
+		if (peerConnection) {
+			peerConnection->resetCallbacks();
+			peerConnection->close();
+		}
+	}
+
+	void Destroy() {
+		if (destroyed.exchange(true))
+			return;
+		dispatcher->Close();
+		{
+			std::lock_guard<std::mutex> lock(channelsMutex);
+			for (auto &[_, channel] : channels)
+				channel->Destroy();
+			channels.clear();
+		}
+		if (peerConnection) {
+			peerConnection->resetCallbacks();
+			peerConnection->close();
+			peerConnection.reset();
+		}
+	}
+
+	std::shared_ptr<rtc::PeerConnection> peerConnection;
+	std::shared_ptr<EventDispatcher> dispatcher;
+
+private:
+	PeerBinding(rtc::Configuration config, std::shared_ptr<EventDispatcher> dispatcher_)
+	    : peerConnection(std::make_shared<rtc::PeerConnection>(std::move(config))),
+	      dispatcher(std::move(dispatcher_)) {}
+
+	void AttachCallbacks() {
+		std::weak_ptr<PeerBinding> weak = shared_from_this();
+
+		peerConnection->onLocalDescription([weak](rtc::Description description) {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "peerconnection";
+				event.type = "localdescription";
+				event.descriptionType = description.typeString();
+				event.sdp = std::string(description);
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		peerConnection->onLocalCandidate([weak](rtc::Candidate candidate) {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "peerconnection";
+				event.type = "localcandidate";
+				event.candidate = candidate.candidate();
+				event.mid = candidate.mid();
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		peerConnection->onStateChange([weak](rtc::PeerConnection::State state) {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "peerconnection";
+				event.type = "connectionstatechange";
+				event.state = ToString(state);
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		peerConnection->onIceStateChange([weak](rtc::PeerConnection::IceState state) {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "peerconnection";
+				event.type = "iceconnectionstatechange";
+				event.state = ToString(state);
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		peerConnection->onGatheringStateChange([weak](rtc::PeerConnection::GatheringState state) {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "peerconnection";
+				event.type = "icegatheringstatechange";
+				event.state = ToString(state);
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		peerConnection->onSignalingStateChange([weak](rtc::PeerConnection::SignalingState state) {
+			if (auto self = weak.lock()) {
+				NativeEvent event;
+				event.target = "peerconnection";
+				event.type = "signalingstatechange";
+				event.state = ToString(state);
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+
+		peerConnection->onDataChannel([weak](std::shared_ptr<rtc::DataChannel> dataChannel) {
+			if (auto self = weak.lock()) {
+				auto channel =
+				    self->AddChannel(dataChannel, ChannelBinding::IncomingOptions(dataChannel));
+				NativeEvent event;
+				event.target = "peerconnection";
+				event.type = "datachannel";
+				event.channelId = channel->id;
+				event.channel = std::move(channel);
+				self->dispatcher->Emit(std::move(event));
+			}
+		});
+	}
+
+	std::atomic<bool> closed{false};
+	std::atomic<bool> destroyed{false};
+	std::mutex channelsMutex;
+	std::unordered_map<int, std::shared_ptr<ChannelBinding>> channels;
+};
+
+class NativePeerConnection : public Napi::ObjectWrap<NativePeerConnection> {
+public:
+	static Napi::FunctionReference constructor;
+
+	static void Init(Napi::Env env, Napi::Object exports) {
+		Napi::Function func = DefineClass(
+		    env, "NativePeerConnection",
+		    {
+		        InstanceMethod("createDataChannel", &NativePeerConnection::CreateDataChannel),
+		        InstanceMethod("createOffer", &NativePeerConnection::CreateOffer),
+		        InstanceMethod("createAnswer", &NativePeerConnection::CreateAnswer),
+		        InstanceMethod("setLocalDescription", &NativePeerConnection::SetLocalDescription),
+		        InstanceMethod("setRemoteDescription", &NativePeerConnection::SetRemoteDescription),
+		        InstanceMethod("addRemoteCandidate", &NativePeerConnection::AddRemoteCandidate),
+		        InstanceMethod("gatherLocalCandidates", &NativePeerConnection::GatherLocalCandidates),
+		        InstanceMethod("localDescription", &NativePeerConnection::LocalDescription),
+		        InstanceMethod("remoteDescription", &NativePeerConnection::RemoteDescription),
+		        InstanceMethod("selectedCandidatePair", &NativePeerConnection::SelectedCandidatePair),
+		        InstanceMethod("close", &NativePeerConnection::Close),
+		        InstanceAccessor("connectionState", &NativePeerConnection::GetConnectionState, nullptr),
+		        InstanceAccessor("iceConnectionState", &NativePeerConnection::GetIceConnectionState,
+		                         nullptr),
+		        InstanceAccessor("iceGatheringState", &NativePeerConnection::GetIceGatheringState,
+		                         nullptr),
+		        InstanceAccessor("signalingState", &NativePeerConnection::GetSignalingState, nullptr),
+		        InstanceAccessor("remoteMaxMessageSize",
+		                         &NativePeerConnection::GetRemoteMaxMessageSize, nullptr),
+		        InstanceAccessor("maxDataChannelId", &NativePeerConnection::GetMaxDataChannelId,
+		                         nullptr),
+		    });
+		constructor = Napi::Persistent(func);
+		constructor.SuppressDestruct();
+		exports.Set("NativePeerConnection", func);
+	}
+
+	NativePeerConnection(const Napi::CallbackInfo &info)
+	    : Napi::ObjectWrap<NativePeerConnection>(info) {
+		Napi::Env env = info.Env();
+		if (info.Length() < 2 || !info[1].IsFunction())
+			throw Napi::TypeError::New(env, "NativePeerConnection requires an event callback");
+		auto dispatcher = EventDispatcher::Create(env, info[1].As<Napi::Function>());
+		binding_ = PeerBinding::Create(ParseConfiguration(info), dispatcher);
+	}
+
+	~NativePeerConnection() override {
+		if (binding_)
+			binding_->Destroy();
+	}
+
+private:
+	std::shared_ptr<PeerBinding> binding_;
+
+	Napi::Value CreateDataChannel(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			std::string label = info[0].ToString().Utf8Value();
+			ChannelOptions options =
+			    ParseChannelOptions(info.Length() > 1 ? info[1] : env.Undefined());
+			auto dataChannel =
+			    binding_->peerConnection->createDataChannel(label, ToRtcInit(options));
+			auto channel = binding_->AddChannel(std::move(dataChannel), std::move(options));
+			return NativeDataChannel::NewInstance(env, std::move(channel));
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value CreateOffer(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			return DescriptionToObject(env, binding_->peerConnection->createOffer());
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value CreateAnswer(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			return DescriptionToObject(env, binding_->peerConnection->createAnswer());
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value SetLocalDescription(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			std::string type;
+			if (info.Length() > 0 && !info[0].IsUndefined() && !info[0].IsNull())
+				type = info[0].ToString().Utf8Value();
+			rtc::LocalDescriptionInit init;
+			if (info.Length() > 1)
+				init = ParseLocalDescriptionInit(info[1]);
+			binding_->peerConnection->setLocalDescription(ParseDescriptionType(type), init);
+			return env.Undefined();
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value SetRemoteDescription(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			Napi::Object object = info[0].As<Napi::Object>();
+			std::string type = object.Get("type").ToString().Utf8Value();
+			std::string sdp = object.Get("sdp").ToString().Utf8Value();
+			binding_->peerConnection->setRemoteDescription(rtc::Description(sdp, type));
+			return env.Undefined();
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value AddRemoteCandidate(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			Napi::Object object = info[0].As<Napi::Object>();
+			std::string candidate = object.Get("candidate").ToString().Utf8Value();
+			std::string mid;
+			if (object.Has("sdpMid") && !object.Get("sdpMid").IsNull() &&
+			    !object.Get("sdpMid").IsUndefined())
+				mid = object.Get("sdpMid").ToString().Utf8Value();
+			binding_->peerConnection->addRemoteCandidate(rtc::Candidate(candidate, mid));
+			return env.Undefined();
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value GatherLocalCandidates(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			binding_->peerConnection->gatherLocalCandidates();
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+		}
+		return env.Undefined();
+	}
+
+	Napi::Value LocalDescription(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			auto description = binding_->peerConnection->localDescription();
+			if (!description)
+				return env.Null();
+			return DescriptionToObject(env, *description);
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value RemoteDescription(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			auto description = binding_->peerConnection->remoteDescription();
+			if (!description)
+				return env.Null();
+			return DescriptionToObject(env, *description);
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value SelectedCandidatePair(const Napi::CallbackInfo &info) {
+		Napi::Env env = info.Env();
+		try {
+			rtc::Candidate local;
+			rtc::Candidate remote;
+			if (!binding_->peerConnection->getSelectedCandidatePair(&local, &remote))
+				return env.Null();
+			Napi::Object pair = Napi::Object::New(env);
+			pair.Set("local", CandidateToObject(env, local));
+			pair.Set("remote", CandidateToObject(env, remote));
+			return pair;
+		} catch (const std::exception &e) {
+			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+	}
+
+	Napi::Value Close(const Napi::CallbackInfo &info) {
+		try {
+			binding_->ClosePeer();
+		} catch (const std::exception &e) {
+			Napi::Error::New(info.Env(), e.what()).ThrowAsJavaScriptException();
+		}
+		return info.Env().Undefined();
+	}
+
+	Napi::Value GetConnectionState(const Napi::CallbackInfo &info) {
+		return Napi::String::New(info.Env(), ToString(binding_->peerConnection->state()));
+	}
+
+	Napi::Value GetIceConnectionState(const Napi::CallbackInfo &info) {
+		return Napi::String::New(info.Env(), ToString(binding_->peerConnection->iceState()));
+	}
+
+	Napi::Value GetIceGatheringState(const Napi::CallbackInfo &info) {
+		return Napi::String::New(info.Env(), ToString(binding_->peerConnection->gatheringState()));
+	}
+
+	Napi::Value GetSignalingState(const Napi::CallbackInfo &info) {
+		return Napi::String::New(info.Env(), ToString(binding_->peerConnection->signalingState()));
+	}
+
+	Napi::Value GetRemoteMaxMessageSize(const Napi::CallbackInfo &info) {
+		return Napi::Number::New(info.Env(), binding_->peerConnection->remoteMaxMessageSize());
+	}
+
+	Napi::Value GetMaxDataChannelId(const Napi::CallbackInfo &info) {
+		return Napi::Number::New(info.Env(), binding_->peerConnection->maxDataChannelId());
+	}
+};
+
+Napi::FunctionReference NativePeerConnection::constructor;
+
+Napi::Value GenerateCertificate(const Napi::CallbackInfo &info) {
+	Napi::Env env = info.Env();
+	try {
+		if (info.Length() == 0 || !info[0].IsObject())
+			throw std::invalid_argument("generateCertificate requires an options object");
+		Napi::Object options = info[0].As<Napi::Object>();
+		std::string algorithm = options.Get("algorithm").ToString().Utf8Value();
+		uint32_t modulusLength = options.Has("modulusLength")
+		                             ? options.Get("modulusLength").ToNumber().Uint32Value()
+		                             : 2048;
+		double expiresMs =
+		    options.Has("expiresMs") ? options.Get("expiresMs").ToNumber().DoubleValue()
+		                             : 30.0 * 24.0 * 60.0 * 60.0 * 1000.0;
+
+		auto material = GenerateCertificateMaterial(algorithm, modulusLength, expiresMs);
+		Napi::Object result = Napi::Object::New(env);
+		result.Set("certificatePem", material.certificatePem);
+		result.Set("keyPem", material.keyPem);
+		result.Set("fingerprints", Napi::Array::New(env, 1));
+		Napi::Object fingerprint = Napi::Object::New(env);
+		fingerprint.Set("algorithm", "sha-256");
+		fingerprint.Set("value", material.fingerprint);
+		result.Get("fingerprints").As<Napi::Array>().Set(uint32_t{0}, fingerprint);
+		return result;
+	} catch (const std::exception &e) {
+		Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+		return env.Undefined();
+	}
+}
+
+Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
+	NativeDataChannel::Init(env, exports);
+	NativePeerConnection::Init(env, exports);
+	exports.Set("generateCertificate", Napi::Function::New(env, GenerateCertificate));
+	exports.Set("cleanup", Napi::Function::New(env, [](const Napi::CallbackInfo &info) {
+		            rtc::Cleanup().wait();
+		            return info.Env().Undefined();
+	            }));
+	return exports;
+}
+
+} // namespace
+
+NODE_API_MODULE(webrtc_node, InitAll)

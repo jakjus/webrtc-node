@@ -1,0 +1,13 @@
+build/
+node_modules/
+libdatachannel/
+wpt/
+*.log
+*.tgz
+wpt-results.json
+wpt-report.md
+wpt-manifest.txt
+ci-evidence.json
+ci-artifacts/
+coverage/
+.nyc_output/

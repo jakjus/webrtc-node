@@ -1,0 +1,42 @@
+name: WPT conformance gap
+description: Track a WebRTC/WPT behavior gap or intentional divergence.
+title: "[wpt] "
+labels: ["wpt", "conformance"]
+body:
+  - type: input
+    id: wpt
+    attributes:
+      label: WPT file or selector
+      placeholder: "webrtc/RTCDataChannel-send.html#subtest name"
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior
+      description: Describe the observed Node/libdatachannel behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected W3C behavior
+      description: Link to WPT/spec text when possible.
+    validations:
+      required: true
+  - type: dropdown
+    id: classification
+    attributes:
+      label: Manifest classification
+      options:
+        - expected pass
+        - expected fail
+        - needs shim
+        - not applicable to Node/libdatachannel
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Mention related divergences, native limitations, or lifetime/threading concerns.

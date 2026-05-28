@@ -1,0 +1,130 @@
+cmake_minimum_required(VERSION 3.21)
+
+project(webrtc_node LANGUAGES CXX)
+
+include(FetchContent)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+if(NOT DEFINED CMAKE_JS_INC)
+  message(FATAL_ERROR "This project is intended to be built through cmake-js.")
+endif()
+
+execute_process(
+  COMMAND node -p "require('node-addon-api').include_dir"
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  OUTPUT_VARIABLE NODE_ADDON_API_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+string(REPLACE "\"" "" NODE_ADDON_API_DIR "${NODE_ADDON_API_DIR}")
+string(REPLACE "\\" "/" NODE_ADDON_API_DIR "${NODE_ADDON_API_DIR}")
+
+set(LIBDATACHANNEL_PINNED_COMMIT "ca9a141f84393355f4af7a6c7b6645d2f1fc49b8" CACHE STRING
+    "Audited libdatachannel commit for this binding.")
+
+set(LIBDATACHANNEL_REPOSITORY "https://github.com/paullouisageneau/libdatachannel.git" CACHE STRING
+    "Repository used when the pinned libdatachannel checkout is not present locally.")
+
+set(LIBDATACHANNEL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libdatachannel" CACHE PATH
+    "Path to the pinned libdatachannel checkout.")
+
+set(LIBDATACHANNEL_VERIFY_PINNED_COMMIT ON CACHE BOOL
+    "Verify that a git libdatachannel checkout matches LIBDATACHANNEL_PINNED_COMMIT.")
+
+function(verify_libdatachannel_pin source_dir)
+  if(NOT LIBDATACHANNEL_VERIFY_PINNED_COMMIT)
+    return()
+  endif()
+
+  find_package(Git QUIET)
+  if(NOT Git_FOUND)
+    message(WARNING "Git was not found; cannot verify libdatachannel commit pin.")
+    return()
+  endif()
+
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${source_dir}" rev-parse HEAD
+    OUTPUT_VARIABLE LIBDATACHANNEL_ACTUAL_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE LIBDATACHANNEL_GIT_RESULT
+  )
+
+  if(LIBDATACHANNEL_GIT_RESULT EQUAL 0)
+    if(NOT LIBDATACHANNEL_ACTUAL_COMMIT STREQUAL LIBDATACHANNEL_PINNED_COMMIT)
+      message(FATAL_ERROR
+        "libdatachannel checkout at ${source_dir} is ${LIBDATACHANNEL_ACTUAL_COMMIT}, "
+        "but this binding is pinned to ${LIBDATACHANNEL_PINNED_COMMIT}. "
+        "Update the checkout or configure LIBDATACHANNEL_VERIFY_PINNED_COMMIT=OFF intentionally.")
+    endif()
+  else()
+    message(WARNING "Could not verify libdatachannel commit at ${source_dir}; assuming vendored source.")
+  endif()
+endfunction()
+
+if(EXISTS "${LIBDATACHANNEL_SOURCE_DIR}/CMakeLists.txt")
+  set(LIBDATACHANNEL_RESOLVED_SOURCE_DIR "${LIBDATACHANNEL_SOURCE_DIR}")
+else()
+  message(STATUS
+    "libdatachannel source not found at ${LIBDATACHANNEL_SOURCE_DIR}; "
+    "fetching ${LIBDATACHANNEL_REPOSITORY} at ${LIBDATACHANNEL_PINNED_COMMIT}.")
+  FetchContent_Declare(
+    libdatachannel_pinned
+    GIT_REPOSITORY "${LIBDATACHANNEL_REPOSITORY}"
+    GIT_TAG "${LIBDATACHANNEL_PINNED_COMMIT}"
+    GIT_SHALLOW FALSE
+    GIT_SUBMODULES_RECURSE TRUE
+  )
+  FetchContent_GetProperties(libdatachannel_pinned)
+  if(NOT libdatachannel_pinned_POPULATED)
+    FetchContent_Populate(libdatachannel_pinned)
+  endif()
+  set(LIBDATACHANNEL_RESOLVED_SOURCE_DIR "${libdatachannel_pinned_SOURCE_DIR}")
+endif()
+
+verify_libdatachannel_pin("${LIBDATACHANNEL_RESOLVED_SOURCE_DIR}")
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_DEPS_LIBS OFF CACHE BOOL "" FORCE)
+set(NO_MEDIA ON CACHE BOOL "" FORCE)
+set(NO_WEBSOCKET ON CACHE BOOL "" FORCE)
+set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
+set(NO_TESTS ON CACHE BOOL "" FORCE)
+set(PREFER_SYSTEM_LIB OFF CACHE BOOL "" FORCE)
+
+add_subdirectory("${LIBDATACHANNEL_RESOLVED_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/libdatachannel" EXCLUDE_FROM_ALL)
+
+find_package(OpenSSL REQUIRED)
+
+add_library(${PROJECT_NAME} SHARED
+  src/native/addon.cc
+)
+
+set_target_properties(${PROJECT_NAME} PROPERTIES
+  PREFIX ""
+  SUFFIX ".node"
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+  ${CMAKE_JS_INC}
+  ${NODE_ADDON_API_DIR}
+)
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+  NAPI_VERSION=8
+  RTC_STATIC
+)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
+  ${CMAKE_JS_LIB}
+  LibDataChannel::LibDataChannelStatic
+  OpenSSL::SSL
+)
+
+if(MSVC)
+  target_compile_options(${PROJECT_NAME} PRIVATE /EHsc /bigobj)
+else()
+  target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+endif()

@@ -1,0 +1,77 @@
+{
+  "name": "@mertushka/webrtc-node",
+  "version": "0.0.0",
+  "description": "W3C-style Node.js WebRTC bindings backed by libdatachannel.",
+  "author": "mertushka",
+  "homepage": "https://github.com/mertushka/webrtc-node#readme",
+  "bugs": {
+    "url": "https://github.com/mertushka/webrtc-node/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mertushka/webrtc-node.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "webrtc",
+    "rtcdatachannel",
+    "node",
+    "node-api",
+    "n-api",
+    "libdatachannel",
+    "web-platform-tests"
+  ],
+  "main": "lib/index.js",
+  "types": "index.d.ts",
+  "files": [
+    "docs/README.md",
+    "docs/architecture.md",
+    "docs/conformance.md",
+    "docs/development.md",
+    "docs/divergences.md",
+    "examples",
+    "lib",
+    "scripts",
+    "src",
+    "CMakeLists.txt",
+    "index.d.ts",
+    "wpt-manifest.json"
+  ],
+  "scripts": {
+    "build": "cmake-js compile",
+    "check": "biome check .",
+    "clean": "cmake-js clean",
+    "example:datachannel": "node examples/datachannel.js",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "native:check": "node scripts/check-native-integration.js",
+    "pack:check": "npm pack --dry-run",
+    "api:check": "node scripts/check-api-surface.js",
+    "test": "node --test --test-force-exit --test-timeout=30000 test/basic.test.js test/ci-evidence.test.js",
+    "types:check": "tsc -p tsconfig.types.json",
+    "wpt:ensure": "node scripts/ensure-wpt.js",
+    "wpt:test": "node scripts/run-wpt-subset.js",
+    "wpt:check": "node scripts/check-wpt-results.js",
+    "wpt:check:strict": "node scripts/check-wpt-results.js --fail-on-retries",
+    "wpt:selection:check": "node scripts/check-wpt-selection.js",
+    "wpt:report": "node scripts/write-wpt-report.js",
+    "wpt:manifest": "node scripts/print-wpt-manifest.js",
+    "ci:evidence": "node scripts/write-ci-evidence.js",
+    "ci:evidence:check": "node scripts/check-ci-evidence.js"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.3.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.16",
+    "cmake-js": "^8.0.0",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MPL-2.0"
+}
