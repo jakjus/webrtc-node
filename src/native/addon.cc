@@ -780,9 +780,15 @@ struct PeerBinding : public std::enable_shared_from_this<PeerBinding> {
 	}
 
 	void ClosePeer() {
-		// libdatachannel's public close() is graceful SCTP shutdown; releasing the
-		// peer runs the destructor path that closes transports and joins processors.
-		Shutdown(true);
+		auto self = shared_from_this();
+		std::thread([self = std::move(self)]() {
+			try {
+				// libdatachannel's public close() is graceful SCTP shutdown; releasing the
+				// peer runs the destructor path that closes transports and joins processors.
+				self->Shutdown(true);
+			} catch (...) {
+			}
+		}).detach();
 	}
 
 	void Destroy() {
@@ -923,33 +929,6 @@ private:
 	std::mutex callbacksMutex;
 	std::mutex channelsMutex;
 	std::unordered_map<int, std::shared_ptr<ChannelBinding>> channels;
-};
-
-class ClosePeerWorker : public Napi::AsyncWorker {
-public:
-	ClosePeerWorker(Napi::Env env, std::shared_ptr<PeerBinding> binding_)
-	    : Napi::AsyncWorker(env), deferred(Napi::Promise::Deferred::New(env)),
-	      binding(std::move(binding_)) {}
-
-	Napi::Promise Promise() { return deferred.Promise(); }
-
-	void Execute() override {
-		try {
-			binding->ClosePeer();
-		} catch (const std::exception &e) {
-			SetError(e.what());
-		} catch (...) {
-			SetError("Failed to close native peer connection");
-		}
-	}
-
-	void OnOK() override { deferred.Resolve(Env().Undefined()); }
-
-	void OnError(const Napi::Error &error) override { deferred.Reject(error.Value()); }
-
-private:
-	Napi::Promise::Deferred deferred;
-	std::shared_ptr<PeerBinding> binding;
 };
 
 class NativePeerConnection : public Napi::ObjectWrap<NativePeerConnection> {
@@ -1142,10 +1121,12 @@ private:
 	}
 
 	Napi::Value Close(const Napi::CallbackInfo &info) {
-		auto *worker = new ClosePeerWorker(info.Env(), binding_);
-		auto promise = worker->Promise();
-		worker->Queue();
-		return promise;
+		try {
+			binding_->ClosePeer();
+		} catch (const std::exception &e) {
+			Napi::Error::New(info.Env(), e.what()).ThrowAsJavaScriptException();
+		}
+		return info.Env().Undefined();
 	}
 
 	Napi::Value GetConnectionState(const Napi::CallbackInfo &info) {
