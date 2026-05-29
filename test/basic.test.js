@@ -169,7 +169,7 @@ function closeAll(...peers) {
 
 async function closeAllAndWait(...peers) {
   closeAll(...peers);
-  await delay(250);
+  await Promise.all(peers.map((peer) => peer?._nativeClosePromise).filter(Boolean));
 }
 
 test("RTCSessionDescription and RTCIceCandidate expose WebRTC-shaped JSON", () => {
