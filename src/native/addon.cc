@@ -13,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -357,8 +358,14 @@ struct ChannelBinding : public std::enable_shared_from_this<ChannelBinding> {
 
 	void Close() {
 		auto dc = dataChannel;
-		if (dc)
-			dc->close();
+		if (!dc)
+			return;
+		std::thread([dc = std::move(dc)]() {
+			try {
+				dc->close();
+			} catch (...) {
+			}
+		}).detach();
 	}
 
 	void Destroy() {
