@@ -485,11 +485,10 @@ test("remote peer close disconnects the surviving data-channel ICE transport", a
   const offerer = new RTCPeerConnection();
   const answerer = new RTCPeerConnection();
   t.after(() => closeAllAndWait(offerer, answerer));
-  const local = offerer.createDataChannel("remote-close");
-  const remotePromise = waitFor(answerer, "datachannel");
+  const local = offerer.createDataChannel("remote-close", { negotiated: true, id: 3 });
+  const remote = answerer.createDataChannel("remote-close", { negotiated: true, id: 3 });
 
   await exchangeOfferAnswer(offerer, answerer);
-  const remote = (await remotePromise).channel;
   await waitForOpen(local);
   await waitForOpen(remote);
   await waitForPeerConnectionState(offerer, "connected");
