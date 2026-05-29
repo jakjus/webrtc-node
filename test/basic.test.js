@@ -50,6 +50,16 @@ async function waitForSctpConnected(...peerConnections) {
   );
 }
 
+async function waitForSelectedCandidatePair(iceTransport) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const pair = iceTransport.getSelectedCandidatePair();
+    if (pair) return pair;
+    await delay(10);
+  }
+  throw new Error("Timed out waiting for selected candidate pair");
+}
+
 function candidateTransportEndpoint(candidate) {
   return {
     component: candidate.component,
@@ -438,8 +448,10 @@ test("connected data-channel ICE transports expose candidate pairs", async (t) =
 
   const offererIce = offerer.sctp.transport.iceTransport;
   const answererIce = answerer.sctp.transport.iceTransport;
-  const offererPair = offererIce.getSelectedCandidatePair();
-  const answererPair = answererIce.getSelectedCandidatePair();
+  const [offererPair, answererPair] = await Promise.all([
+    waitForSelectedCandidatePair(offererIce),
+    waitForSelectedCandidatePair(answererIce),
+  ]);
   const allowedStates = new Set(["gathering", "complete"]);
 
   assert.equal(allowedStates.has(offererIce.gatheringState), true);
