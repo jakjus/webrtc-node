@@ -837,12 +837,12 @@ private:
 		for (auto &channel : channelSnapshot)
 			channel->Destroy();
 		DeactivateCallbacks();
+		dispatcher->Close();
 		if (releaseNative) {
 			peerConnection.reset();
 		} else if (peerConnection) {
 			peerConnection->close();
 		}
-		dispatcher->Close();
 	}
 
 	void AttachCallbacks() {
