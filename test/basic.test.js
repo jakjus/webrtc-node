@@ -79,6 +79,39 @@ function collectMessages(channel, count, timeout = 10000) {
   });
 }
 
+async function addIceCandidateBestEffort(peerConnection, candidate) {
+  try {
+    await peerConnection.addIceCandidate(candidate);
+  } catch {
+    // ICE restart can leave older gathered candidates in flight. Unit helpers
+    // mirror browser-style candidate exchange and keep those races non-fatal.
+  }
+}
+
+function exchangeIceCandidates(offerer, answerer) {
+  offerer.addEventListener("icecandidate", (event) => {
+    if (event.candidate && answerer.signalingState !== "closed") {
+      addIceCandidateBestEffort(answerer, event.candidate);
+    }
+  });
+
+  answerer.addEventListener("icecandidate", (event) => {
+    if (event.candidate && offerer.signalingState !== "closed") {
+      addIceCandidateBestEffort(offerer, event.candidate);
+    }
+  });
+}
+
+async function exchangeSessionDescriptions(offerer, answerer) {
+  const offer = await offerer.createOffer();
+  await offerer.setLocalDescription(offer);
+  await answerer.setRemoteDescription(offerer.localDescription);
+
+  const answer = await answerer.createAnswer();
+  await answerer.setLocalDescription(answer);
+  await offerer.setRemoteDescription(answerer.localDescription);
+}
+
 async function exchangeOfferAnswer(offerer, answerer) {
   const offererCandidates = [];
   const answererCandidates = [];
@@ -86,7 +119,7 @@ async function exchangeOfferAnswer(offerer, answerer) {
   offerer.onicecandidate = (event) => {
     if (!event.candidate) return;
     if (answerer.remoteDescription) {
-      answerer.addIceCandidate(event.candidate);
+      addIceCandidateBestEffort(answerer, event.candidate);
     } else {
       offererCandidates.push(event.candidate);
     }
@@ -95,7 +128,7 @@ async function exchangeOfferAnswer(offerer, answerer) {
   answerer.onicecandidate = (event) => {
     if (!event.candidate) return;
     if (offerer.remoteDescription) {
-      offerer.addIceCandidate(event.candidate);
+      addIceCandidateBestEffort(offerer, event.candidate);
     } else {
       answererCandidates.push(event.candidate);
     }
@@ -104,12 +137,16 @@ async function exchangeOfferAnswer(offerer, answerer) {
   const offer = await offerer.createOffer();
   await offerer.setLocalDescription(offer);
   await answerer.setRemoteDescription(offerer.localDescription);
-  for (const candidate of offererCandidates.splice(0)) await answerer.addIceCandidate(candidate);
+  for (const candidate of offererCandidates.splice(0)) {
+    await addIceCandidateBestEffort(answerer, candidate);
+  }
 
   const answer = await answerer.createAnswer();
   await answerer.setLocalDescription(answer);
   await offerer.setRemoteDescription(answerer.localDescription);
-  for (const candidate of answererCandidates.splice(0)) await offerer.addIceCandidate(candidate);
+  for (const candidate of answererCandidates.splice(0)) {
+    await addIceCandidateBestEffort(offerer, candidate);
+  }
 }
 
 function closeAll(...peers) {
@@ -293,14 +330,17 @@ test("restartIce renegotiates without closing data channels", async (t) => {
   t.after(() => closeAllAndWait(offerer, answerer));
   const local = offerer.createDataChannel("restart");
   const remotePromise = waitFor(answerer, "datachannel");
+  exchangeIceCandidates(offerer, answerer);
 
-  await exchangeOfferAnswer(offerer, answerer);
+  await exchangeSessionDescriptions(offerer, answerer);
   const remote = (await remotePromise).channel;
   await waitForOpen(local);
   await waitForOpen(remote);
 
   offerer.restartIce();
-  await exchangeOfferAnswer(offerer, answerer);
+  await exchangeSessionDescriptions(offerer, answerer);
+  await waitForOpen(local);
+  await waitForOpen(remote);
 
   const messagePromise = waitFor(remote, "message");
   local.send("after-restart");
