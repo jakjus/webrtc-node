@@ -481,6 +481,27 @@ test("connected data-channel ICE transports expose candidate pairs", async (t) =
   answerer.close();
 });
 
+test("unconnected ICE transport does not expose libdatachannel native selected pair", async (t) => {
+  const offerer = new RTCPeerConnection();
+  const answerer = new RTCPeerConnection();
+  t.after(() => closeAllAndWait(offerer, answerer));
+  offerer.createDataChannel("unconnected");
+
+  const offer = await offerer.createOffer();
+  await offerer.setLocalDescription(offer);
+  await answerer.setRemoteDescription(offer);
+  const answer = await answerer.createAnswer();
+  await offerer.setRemoteDescription(answer);
+  await delay(100);
+
+  const iceTransport = offerer.sctp.transport.iceTransport;
+  assert.deepEqual(iceTransport.getRemoteCandidates(), []);
+  assert.equal(iceTransport.getSelectedCandidatePair(), null);
+
+  offerer.close();
+  answerer.close();
+});
+
 test("remote peer close disconnects the surviving data-channel ICE transport", async (t) => {
   const offerer = new RTCPeerConnection();
   const answerer = new RTCPeerConnection();
