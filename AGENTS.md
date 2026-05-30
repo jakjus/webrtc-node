@@ -76,6 +76,13 @@ npm run api:check
 npm run types:check
 npm run pack:check
 npm run wpt:selection:check
+npm run wpt:smoke
+npm run wpt:smoke:check
+```
+
+Full conformance validation is intentionally separate from ordinary push/PR CI:
+
+```sh
 npm run wpt:test
 npm run wpt:check:strict
 npm run ci:evidence
@@ -92,8 +99,8 @@ For targeted WPT debugging, pass a file or `file#subtest` selector to
 
 After downloading CI artifacts into `ci-artifacts/`, run
 `npm run ci:evidence:check` to verify the Linux/macOS/Windows Node 20/22/24
-matrix evidence. The CI workflow also runs this as the final
-`verify-ci-evidence` job.
+matrix evidence. The Conformance workflow also runs this as the final
+`Verify CI evidence` job.
 
 ## Change Discipline
 

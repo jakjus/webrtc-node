@@ -10,6 +10,7 @@ const failOnRetries =
   !args.includes("--allow-retries") &&
   process.env.WPT_ALLOW_RETRIES !== "1";
 const explicitPathIndex = args.indexOf("--results");
+const expectedTotalIndex = args.indexOf("--expected-total");
 const resultsPath =
   explicitPathIndex === -1
     ? process.env.WPT_RESULTS || path.join(root, "wpt-results.json")
@@ -20,7 +21,9 @@ const manifest = fs.existsSync(manifestPath)
   : {};
 const expectedTotal = process.env.WPT_EXPECTED_TOTAL
   ? Number(process.env.WPT_EXPECTED_TOTAL)
-  : (manifest.expectedSelectedSubtests ?? null);
+  : expectedTotalIndex === -1
+    ? (manifest.expectedSelectedSubtests ?? null)
+    : Number(args[expectedTotalIndex + 1]);
 
 function fail(message) {
   console.error(`WPT result check failed: ${message}`);
@@ -29,6 +32,9 @@ function fail(message) {
 
 if (explicitPathIndex !== -1 && !resultsPath) {
   fail("--results requires a path");
+}
+if (expectedTotalIndex !== -1 && !args[expectedTotalIndex + 1]) {
+  fail("--expected-total requires a positive integer");
 }
 
 if (!fs.existsSync(resultsPath)) {

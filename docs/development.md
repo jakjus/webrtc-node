@@ -28,6 +28,8 @@ npm run api:check
 npm run types:check
 npm run pack:check
 npm run wpt:selection:check
+npm run wpt:smoke
+npm run wpt:smoke:check
 ```
 
 Run the full selected WPT suite before claiming conformance changes:
@@ -38,6 +40,11 @@ npm run wpt:test
 npm run wpt:check:strict
 npm run wpt:report -- --output wpt-report.md
 ```
+
+The default `CI` workflow keeps pull requests fast by running the native
+OS/Node matrix with unit tests plus a small WPT smoke subset on Ubuntu Node 24.
+The full selected WPT matrix is in the `Conformance` workflow, which runs on
+manual dispatch, weekly schedule, and version tags.
 
 By default, WPT is fetched into the ignored `wpt/` cache. Set `WPT_DIR` to use a
 different pinned checkout.
@@ -64,9 +71,9 @@ npm run format
 ```
 
 `npm run check` is the Biome gate used by GitHub Actions. The full Quality job
-also runs `npm run types:check` and `npm run pack:check`. `pack:check`
-validates the npm source artifact contents. Use `npm run format` before sending
-a pull request.
+also runs `npm run types:check`, `npm run pack:check`, and
+`npm run wpt:selection:check`. `pack:check` validates the npm source artifact
+contents. Use `npm run format` before sending a pull request.
 
 ## Package Artifact
 

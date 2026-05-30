@@ -111,6 +111,8 @@ npm run api:check
 npm run types:check
 npm run pack:check
 npm run wpt:selection:check
+npm run wpt:smoke
+npm run wpt:smoke:check
 ```
 
 `npm run pack:check` verifies the npm source artifact contains the native
@@ -124,6 +126,10 @@ npm run wpt:ensure
 npm run wpt:test
 npm run wpt:check:strict
 ```
+
+GitHub Actions runs the fast build/unit matrix plus WPT smoke on ordinary pushes
+and pull requests. The full selected WPT matrix lives in the separate
+`Conformance` workflow for manual, scheduled, and version-tagged release checks.
 
 Use `npm run format` to apply Biome formatting before opening a pull request.
 

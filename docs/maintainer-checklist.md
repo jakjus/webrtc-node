@@ -15,6 +15,8 @@ npm run api:check
 npm run types:check
 npm run pack:check
 npm run wpt:selection:check
+npm run wpt:smoke
+npm run wpt:smoke:check
 ```
 
 Run the full selected WPT suite when changing WebRTC behavior:
@@ -33,8 +35,9 @@ npm run wpt:report -- --output wpt-report.md
 - configure npm trusted publishing for `.github/workflows/release.yml`, with
   GitHub environment `npm` if release approvals are required;
 - protect `main` after the first green public run;
-- require `Quality`, the OS/Node CI matrix, and `Verify CI evidence` before
-  merging.
+- require `Quality`, the OS/Node CI matrix, `Package artifact`, and `WPT smoke`
+  before merging;
+- require a green `Conformance` workflow before publishing a release.
 
 ## Release Readiness
 
@@ -45,6 +48,8 @@ Before npm publication:
 - publish through the GitHub `Release` workflow so Linux, macOS, and Windows
   Node-API prebuilds are attached to the GitHub Release before npm publication;
 - ensure the GitHub Release tag matches `v<package.json version>`;
+- run the `Conformance` workflow for the release tag and confirm
+  `Verify CI evidence` is green before publishing to npm;
 - confirm the CI `Package artifact` job is green so the packed source builds
   outside the working tree;
 - confirm `prebuild-linux-*`, `prebuild-macos`, `prebuild-windows`, and

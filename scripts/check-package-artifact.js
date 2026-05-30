@@ -44,6 +44,7 @@ const requiredFiles = [
   "scripts/check-prebuilds.js",
   "scripts/install-native.js",
   "scripts/package-prebuild.js",
+  "scripts/run-wpt-smoke.js",
   "examples/datachannel.js",
   "docs/README.md",
   "docs/architecture.md",
