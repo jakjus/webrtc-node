@@ -46,6 +46,13 @@ OS/Node matrix with unit tests plus a small WPT smoke subset on Ubuntu Node 24.
 The full selected WPT matrix is in the `Conformance` workflow, which runs on
 manual dispatch, weekly schedule, and version tags.
 
+Only source-relevant changes run the native matrix, package-artifact source
+build, and WPT smoke job. Source-relevant paths include `lib/`, `src/`,
+`scripts/`, `test/`, `examples/`, `build-containers/`, `CMakeLists.txt`,
+package files, TypeScript/API config, Biome config, and `wpt-manifest.json`.
+Documentation, agent notes, and workflow-only maintenance changes run the
+lightweight quality gate only.
+
 By default, WPT is fetched into the ignored `wpt/` cache. Set `WPT_DIR` to use a
 different pinned checkout.
 

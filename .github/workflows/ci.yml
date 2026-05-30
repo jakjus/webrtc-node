@@ -13,6 +13,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      source: ${{ steps.classify.outputs.source }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: classify
+        name: Classify changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(node -e "const e = require(process.env.GITHUB_EVENT_PATH); process.stdout.write(e.pull_request?.base?.sha || e.before || '')")"
+          head="$GITHUB_SHA"
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
+            echo "source=true" >> "$GITHUB_OUTPUT"
+            echo "No comparable base commit; running full CI." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! git fetch --no-tags --depth=1 origin "$base"; then
+            echo "source=true" >> "$GITHUB_OUTPUT"
+            echo "Could not fetch base commit; running full CI." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git diff --name-only "$base" "$head" > changed-files.txt
+          cat changed-files.txt
+
+          source_changed="false"
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              lib/*|src/*|scripts/*|test/*|examples/*|build-containers/*|CMakeLists.txt|package.json|package-lock.json|index.d.ts|tsconfig*.json|biome.json|wpt-manifest.json)
+                source_changed="true"
+                ;;
+            esac
+          done < changed-files.txt
+
+          echo "source=$source_changed" >> "$GITHUB_OUTPUT"
+          if [ "$source_changed" = "true" ]; then
+            echo "Source-relevant files changed; running native CI and WPT smoke." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No source-relevant files changed; skipping native CI and WPT smoke." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   quality:
     name: Quality
     runs-on: ubuntu-latest
@@ -37,7 +85,8 @@ jobs:
   package-artifact:
     name: Package artifact
     runs-on: ubuntu-latest
-    needs: quality
+    needs: [changes, quality]
+    if: needs.changes.outputs.source == 'true'
     timeout-minutes: 30
 
     steps:
@@ -85,7 +134,8 @@ jobs:
   build-test:
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    needs: quality
+    needs: [changes, quality]
+    if: needs.changes.outputs.source == 'true'
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -162,7 +212,8 @@ jobs:
   wpt-smoke:
     name: WPT smoke
     runs-on: ubuntu-latest
-    needs: quality
+    needs: [changes, quality]
+    if: needs.changes.outputs.source == 'true'
     timeout-minutes: 30
     env:
       WPT_TEST_TIMEOUT_MS: 180000
