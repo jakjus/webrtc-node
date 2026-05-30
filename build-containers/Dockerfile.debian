@@ -1,0 +1,17 @@
+ARG NODE_VERSION=20
+ARG DEBIAN_VERSION=bookworm
+
+FROM node:${NODE_VERSION}-${DEBIAN_VERSION}
+
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    libssl-dev \
+    ninja-build \
+    python3 && \
+  rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/app

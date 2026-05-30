@@ -1,6 +1,7 @@
 build/
 node_modules/
 libdatachannel/
+prebuild-artifacts/
 wpt/
 *.log
 *.tgz

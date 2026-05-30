@@ -75,6 +75,36 @@ extracts it in a clean directory, installs dependencies, builds the native
 addon, and requires the package. This guards against missing files in
 `package.json#files` before npm publication.
 
+## Prebuilt Releases
+
+The release workflow keeps `cmake-js` as the native build backend. Platform jobs
+build `build/Release/webrtc_node.node`, then `npm run prebuild:package` creates
+`prebuild-artifacts/webrtc-node-v<version>-napi-v8-<target>.tar.gz`. The npm
+publish job downloads those artifacts, verifies the expected prebuild set,
+uploads them to the GitHub Release, runs `pack:check`, and publishes the source
+package. Prebuilds are not bundled inside the npm tarball.
+
+Publishing uses npm trusted publishing with GitHub Actions OIDC, not an
+`NPM_TOKEN` secret. Configure the npm package trusted publisher for repository
+`mertushka/webrtc-node`, workflow filename `release.yml`, and environment `npm`
+if the GitHub release environment is kept.
+
+Manual `workflow_dispatch` releases expect a GitHub Release named
+`v<package.json version>` to already exist, because prebuilt archives are
+uploaded as release assets before `npm publish` runs.
+
+Supported release targets are:
+
+- `linux-x64-glibc`
+- `linux-x64-musl`
+- `darwin-x64`
+- `darwin-arm64`
+- `win32-x64`
+
+Use `WEBRTC_NODE_NATIVE_PATH=/absolute/path/to/webrtc_node.node` to test a
+specific local native binary. Use `npm install --build-from-source` to force the
+install script to compile with `cmake-js`.
+
 ## Docker Linux Slice
 
 GitHub Actions is the authoritative conformance gate. The Docker helpers are

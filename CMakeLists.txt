@@ -8,6 +8,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+if(DEFINED napi_build_version)
+  set(WEBRTC_NODE_NAPI_VERSION "${napi_build_version}")
+else()
+  set(WEBRTC_NODE_NAPI_VERSION 8)
+endif()
+
+set(WEBRTC_NODE_STATIC_OPENSSL OFF CACHE BOOL
+    "Prefer static OpenSSL libraries when building release prebuilds.")
+
 if(NOT DEFINED CMAKE_JS_INC)
   message(FATAL_ERROR "This project is intended to be built through cmake-js.")
 endif()
@@ -94,6 +103,10 @@ set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
 set(NO_TESTS ON CACHE BOOL "" FORCE)
 set(PREFER_SYSTEM_LIB OFF CACHE BOOL "" FORCE)
 
+if(WEBRTC_NODE_STATIC_OPENSSL)
+  set(OPENSSL_USE_STATIC_LIBS TRUE)
+endif()
+
 add_subdirectory("${LIBDATACHANNEL_RESOLVED_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/libdatachannel" EXCLUDE_FROM_ALL)
 
 find_package(OpenSSL REQUIRED)
@@ -113,7 +126,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
-  NAPI_VERSION=8
+  NAPI_VERSION=${WEBRTC_NODE_NAPI_VERSION}
   RTC_STATIC
 )
 

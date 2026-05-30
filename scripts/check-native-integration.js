@@ -34,6 +34,19 @@ requireMatch(
   JSON.stringify(pkg.dependencies || {}),
   /"node-addon-api"\s*:/,
 );
+requireMatch(
+  "detect-libc runtime dependency",
+  JSON.stringify(pkg.dependencies || {}),
+  /"detect-libc"\s*:/,
+);
+requireMatch(
+  "cmake-js source-build dependency",
+  JSON.stringify(pkg.dependencies || {}),
+  /"cmake-js"\s*:/,
+);
+requireMatch("native install script", JSON.stringify(pkg.scripts || {}), /install-native\.js/);
+requireMatch("prebuild package script", JSON.stringify(pkg.scripts || {}), /package-prebuild\.js/);
+requireMatch("prebuild check script", JSON.stringify(pkg.scripts || {}), /check-prebuilds\.js/);
 requireMatch("native <napi.h> include", addon, /#include\s+<napi\.h>/);
 requireMatch("Node-API module initializer", addon, /\bNODE_API_MODULE\s*\(/);
 requireMatch("ThreadSafeFunction dispatcher", addon, /Napi::ThreadSafeFunction::New/);
@@ -86,7 +99,9 @@ requireMatch(
   cmake,
   /set\s*\(\s*NO_WEBSOCKET\s+ON\s+CACHE\s+BOOL\s+""\s+FORCE\s*\)/,
 );
-requireMatch("Node-API version definition", cmake, /NAPI_VERSION=8/);
+requireMatch("Node-API version definition", cmake, /NAPI_VERSION=\$\{WEBRTC_NODE_NAPI_VERSION\}/);
+requireMatch("prebuild napi build version", cmake, /napi_build_version/);
+requireMatch("release static OpenSSL option", cmake, /WEBRTC_NODE_STATIC_OPENSSL/);
 requireMatch("node-addon-api include discovery", cmake, /require\('node-addon-api'\)\.include_dir/);
 requireMatch("static libdatachannel target", cmake, /LibDataChannel::LibDataChannelStatic/);
 

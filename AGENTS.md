@@ -114,6 +114,6 @@ TypeScript, and JSON formatting/linting; run `npm run format` for mechanical
 formatting changes.
 
 Keep generated artifacts out of commits: `build/`, `node_modules/`,
-`libdatachannel/`, `wpt/`, `wpt-results.json`, `wpt-report.md`,
-`wpt-manifest.txt`, `ci-evidence.json`, `ci-artifacts/`, logs, coverage output,
-and package tarballs.
+`libdatachannel/`, `prebuild-artifacts/`, `wpt/`, `wpt-results.json`,
+`wpt-report.md`, `wpt-manifest.txt`, `ci-evidence.json`, `ci-artifacts/`,
+logs, coverage output, and package tarballs.

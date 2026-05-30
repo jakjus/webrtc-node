@@ -30,6 +30,8 @@ npm run wpt:report -- --output wpt-report.md
 - enable GitHub Actions;
 - enable Dependabot alerts and security updates;
 - enable private vulnerability reporting if available;
+- configure npm trusted publishing for `.github/workflows/release.yml`, with
+  GitHub environment `npm` if release approvals are required;
 - protect `main` after the first green public run;
 - require `Quality`, the OS/Node CI matrix, and `Verify CI evidence` before
   merging.
@@ -40,11 +42,15 @@ Before npm publication:
 
 - confirm package contents with `npm run pack:check`;
 - keep `publishConfig.access` set to `public` for the scoped npm package;
-- decide and document the install model before publishing to npm. The current
-  package is source-build oriented; it does not ship prebuilt binaries or an
-  npm install-time native build contract yet;
+- publish through the GitHub `Release` workflow so Linux, macOS, and Windows
+  Node-API prebuilds are attached to the GitHub Release before npm publication;
+- ensure the GitHub Release tag matches `v<package.json version>`;
 - confirm the CI `Package artifact` job is green so the packed source builds
   outside the working tree;
+- confirm `prebuild-linux-*`, `prebuild-macos`, `prebuild-windows`, and
+  `Publish npm package` are green for the release workflow;
+- do not create or store an `NPM_TOKEN`; the release workflow publishes through
+  npm trusted publishing and GitHub Actions OIDC;
 - tag a versioned release;
 - publish current WPT conformance results;
 - keep all intentional divergences in `docs/divergences.md`.

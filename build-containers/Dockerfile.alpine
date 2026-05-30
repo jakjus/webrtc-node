@@ -1,0 +1,18 @@
+ARG NODE_VERSION=20
+ARG ALPINE_VERSION=3.20
+
+FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION}
+
+RUN apk add --no-cache \
+  build-base \
+  ca-certificates \
+  cmake \
+  git \
+  linux-headers \
+  make \
+  ninja \
+  openssl-dev \
+  openssl-libs-static \
+  python3
+
+WORKDIR /usr/app

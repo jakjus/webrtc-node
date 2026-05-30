@@ -35,7 +35,13 @@ devices are not part of this package.
 
 ## Installation
 
-The package is not published to npm yet. Build from source:
+The package is not published to npm yet. Releases are planned to publish
+Node-API prebuilt binaries as GitHub Release assets. The npm package stays a
+source package; its install script downloads the one matching binary for the
+current platform, then falls back to a `cmake-js` source build if none is
+available.
+
+Build from source today:
 
 ```sh
 git clone https://github.com/mertushka/webrtc-node.git
@@ -49,6 +55,13 @@ Requirements:
 - Node.js 20 or newer
 - CMake and a C++17 compiler
 - OpenSSL development libraries
+
+Planned prebuilt targets:
+
+- Linux x64 glibc
+- Linux x64 musl
+- macOS x64 and arm64
+- Windows x64
 
 ## Example
 
@@ -101,8 +114,8 @@ npm run wpt:selection:check
 ```
 
 `npm run pack:check` verifies the npm source artifact contains the native
-sources, facade, declarations, docs, and examples while excluding local caches
-and CI output.
+sources, facade, declarations, docs, and examples while excluding local caches,
+CI output, and release prebuild artifacts.
 
 Run selected WPT tests:
 
