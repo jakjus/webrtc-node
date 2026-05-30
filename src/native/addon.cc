@@ -674,7 +674,7 @@ Napi::Object CandidateToObject(Napi::Env env, const rtc::Candidate &candidate) {
 rtc::Configuration ParseConfiguration(const Napi::CallbackInfo &info) {
 	rtc::Configuration config;
 	config.disableAutoNegotiation = true;
-	config.disableAutoGathering = false;
+	config.disableAutoGathering = true;
 
 	if (info.Length() == 0 || !info[0].IsObject())
 		return config;
