@@ -87,6 +87,7 @@ function runBuild() {
 
 async function main() {
   const buildFromSource = envFlag("npm_config_build_from_source");
+  const prebuildOnly = envFlag("WEBRTC_NODE_PREBUILD_ONLY");
   if (!buildFromSource && hasNativeAddon()) return;
 
   if (isSourceCheckout() && !buildFromSource) {
@@ -101,6 +102,10 @@ async function main() {
       throw new Error(`downloaded archive did not provide ${moduleName}`);
     } catch (error) {
       console.warn(`Prebuilt binary unavailable for ${targetTuple()}: ${error.message}`);
+      if (prebuildOnly) {
+        console.error("Prebuild-only install requested; refusing to build from source.");
+        process.exit(1);
+      }
     }
   }
 

@@ -104,6 +104,12 @@ Publishing uses npm trusted publishing with GitHub Actions OIDC, not an
 `mertushka/webrtc-node`, workflow filename `release.yml`, and environment `npm`
 if the GitHub release environment is kept.
 
+The `Published Install` workflow runs after a successful `Release` workflow or
+by manual dispatch. It installs the published npm package on Linux glibc, Linux
+musl, macOS x64, macOS arm64, and Windows x64, then verifies both CommonJS and
+ESM imports. It sets `WEBRTC_NODE_PREBUILD_ONLY=1` so missing or broken release
+assets fail instead of compiling from source.
+
 Manual `workflow_dispatch` releases expect a GitHub Release named
 `v<package.json version>` to already exist, because prebuilt archives are
 uploaded as release assets before `npm publish` runs.
@@ -123,7 +129,8 @@ Supported release targets are:
 
 Use `WEBRTC_NODE_NATIVE_PATH=/absolute/path/to/webrtc_node.node` to test a
 specific local native binary. Use `npm install --build-from-source` to force the
-install script to compile with `cmake-js`.
+install script to compile with `cmake-js`. Use `WEBRTC_NODE_PREBUILD_ONLY=1` in
+release validation to fail rather than falling back to a source build.
 
 ## Docker Linux Slice
 

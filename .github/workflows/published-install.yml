@@ -1,0 +1,144 @@
+name: Published Install
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_spec:
+        description: npm package spec to install
+        required: true
+        default: "@mertushka/webrtc-node@next"
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Resolve package
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      spec: ${{ steps.resolve.outputs.spec }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - id: resolve
+        name: Resolve npm package spec
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PACKAGE_SPEC: ${{ inputs.package_spec }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            spec="$INPUT_PACKAGE_SPEC"
+          else
+            spec="@mertushka/webrtc-node@$(node -p "require('./package.json').version")"
+          fi
+
+          for attempt in 1 2 3 4 5 6; do
+            if npm view "$spec" version; then
+              break
+            fi
+            if [ "$attempt" = "6" ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+
+          echo "spec=$spec" >> "$GITHUB_OUTPUT"
+          echo "Testing $spec" >> "$GITHUB_STEP_SUMMARY"
+
+  linux:
+    name: ${{ matrix.target }}
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-glibc
+            image: node:24-bookworm
+          - target: linux-x64-musl
+            image: node:24-alpine
+
+    steps:
+      - name: Install published package
+        env:
+          PACKAGE_SPEC: ${{ needs.package.outputs.spec }}
+        run: |
+          docker run --rm \
+            -e PACKAGE_SPEC \
+            -e WEBRTC_NODE_PREBUILD_ONLY=1 \
+            "${{ matrix.image }}" \
+            sh -lc 'set -eu
+              workdir="$(mktemp -d)"
+              cd "$workdir"
+              npm init -y >/dev/null
+              for attempt in 1 2 3; do
+                if npm install "$PACKAGE_SPEC"; then
+                  break
+                fi
+                if [ "$attempt" = "3" ]; then
+                  exit 1
+                fi
+                sleep $((attempt * 10))
+              done
+              node -e "const { RTCPeerConnection } = require(\"@mertushka/webrtc-node\"); const pc = new RTCPeerConnection(); pc.close(); console.log(\"cjs ok\");"
+              node --input-type=module -e "import { RTCPeerConnection } from \"@mertushka/webrtc-node\"; const pc = new RTCPeerConnection(); pc.close(); console.log(\"esm ok\");"
+            '
+
+  hosted:
+    name: ${{ matrix.target }}
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-x64
+            os: macos-15-intel
+          - target: darwin-arm64
+            os: macos-15
+          - target: win32-x64
+            os: windows-latest
+
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install published package
+        shell: bash
+        env:
+          PACKAGE_SPEC: ${{ needs.package.outputs.spec }}
+          WEBRTC_NODE_PREBUILD_ONLY: "1"
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          cd "$workdir"
+          npm init -y >/dev/null
+          for attempt in 1 2 3; do
+            if npm install "$PACKAGE_SPEC"; then
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+          node -e "const { RTCPeerConnection } = require('@mertushka/webrtc-node'); const pc = new RTCPeerConnection(); pc.close(); console.log('cjs ok');"
+          node --input-type=module -e "import { RTCPeerConnection } from '@mertushka/webrtc-node'; const pc = new RTCPeerConnection(); pc.close(); console.log('esm ok');"
