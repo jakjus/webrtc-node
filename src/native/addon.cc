@@ -292,7 +292,7 @@ struct NativeEvent {
 	std::string error;
 	bool binary = false;
 	std::string text;
-	std::vector<uint8_t> bytes;
+	rtc::binary bytes;
 };
 
 struct EventDispatcher : public std::enable_shared_from_this<EventDispatcher> {
@@ -400,17 +400,21 @@ private:
 		callback.Call({EventToObject(env, *scoped)});
 	}
 
-	static Napi::Value MessagePayloadToValue(Napi::Env env, const NativeEvent &event) {
+	static Napi::Value MessagePayloadToValue(Napi::Env env, NativeEvent &event) {
 		if (!event.binary)
 			return Napi::String::New(env, event.text);
 
-		Napi::ArrayBuffer buffer = Napi::ArrayBuffer::New(env, event.bytes.size());
-		if (!event.bytes.empty())
-			std::memcpy(buffer.Data(), event.bytes.data(), event.bytes.size());
-		return buffer;
+		if (event.bytes.empty())
+			return Napi::ArrayBuffer::New(env, 0);
+
+		auto *bytes = new rtc::binary(std::move(event.bytes));
+		return Napi::ArrayBuffer::New(
+		    env, bytes->data(), bytes->size(),
+		    [](Napi::Env, void *, rtc::binary *finalizedBytes) { delete finalizedBytes; },
+		    bytes);
 	}
 
-	static Napi::Object EventToObject(Napi::Env env, const NativeEvent &event);
+	static Napi::Object EventToObject(Napi::Env env, NativeEvent &event);
 
 	std::atomic<bool> active{true};
 	std::mutex lifecycleMutex;
@@ -539,10 +543,7 @@ private:
 					event.text = std::get<std::string>(std::move(data));
 				} else {
 					event.binary = true;
-					const auto &binary = std::get<rtc::binary>(data);
-					event.bytes.reserve(binary.size());
-					for (std::byte value : binary)
-						event.bytes.push_back(std::to_integer<uint8_t>(value));
+					event.bytes = std::move(std::get<rtc::binary>(data));
 				}
 				self->Emit(std::move(event));
 			}
@@ -706,7 +707,7 @@ private:
 
 Napi::FunctionReference NativeDataChannel::constructor;
 
-Napi::Object EventDispatcher::EventToObject(Napi::Env env, const NativeEvent &event) {
+Napi::Object EventDispatcher::EventToObject(Napi::Env env, NativeEvent &event) {
 	Napi::Object object = Napi::Object::New(env);
 	object.Set("target", event.target);
 	object.Set("type", event.type);
