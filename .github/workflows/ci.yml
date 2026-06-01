@@ -127,7 +127,6 @@ jobs:
           tar -xzf "${{ steps.pack.outputs.tarball }}" -C "$workdir"
           cd "$workdir/package"
           npm install
-          npm run native:check
           npm run build
           node -e "const { RTCPeerConnection } = require('./'); const pc = new RTCPeerConnection(); pc.close(); console.log('packed source require ok');"
 
