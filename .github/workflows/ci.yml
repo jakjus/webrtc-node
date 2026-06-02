@@ -18,7 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      source: ${{ steps.classify.outputs.source }}
+      native: ${{ steps.classify.outputs.native }}
+      package_artifact: ${{ steps.classify.outputs.package_artifact }}
+      wpt: ${{ steps.classify.outputs.wpt }}
 
     steps:
       - uses: actions/checkout@v6
@@ -31,34 +33,67 @@ jobs:
           base="$(node -e "const e = require(process.env.GITHUB_EVENT_PATH); process.stdout.write(e.pull_request?.base?.sha || e.before || '')")"
           head="$GITHUB_SHA"
           if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
-            echo "source=true" >> "$GITHUB_OUTPUT"
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            echo "package_artifact=true" >> "$GITHUB_OUTPUT"
+            echo "wpt=true" >> "$GITHUB_OUTPUT"
             echo "No comparable base commit; running full CI." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           if ! git fetch --no-tags --depth=1 origin "$base"; then
-            echo "source=true" >> "$GITHUB_OUTPUT"
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            echo "package_artifact=true" >> "$GITHUB_OUTPUT"
+            echo "wpt=true" >> "$GITHUB_OUTPUT"
             echo "Could not fetch base commit; running full CI." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           git diff --name-only "$base" "$head" > changed-files.txt
           cat changed-files.txt
 
-          source_changed="false"
+          native_changed="false"
+          package_changed="false"
+          wpt_changed="false"
+          workflow_changed="false"
           while IFS= read -r file; do
             [ -z "$file" ] && continue
             case "$file" in
-              lib/*|src/*|scripts/*|test/*|examples/*|build-containers/*|CMakeLists.txt|package.json|package-lock.json|index.d.ts|tsconfig*.json|biome.json|wpt-manifest.json)
-                source_changed="true"
+              .github/workflows/*|.github/actions/*)
+                workflow_changed="true"
+                ;;
+            esac
+            case "$file" in
+              lib/*|src/*|test/*|CMakeLists.txt|package.json|package-lock.json|index.d.ts|scripts/check-api-surface.js|scripts/check-native-integration.js)
+                native_changed="true"
+                ;;
+            esac
+            case "$file" in
+              package.json|package-lock.json|CMakeLists.txt|lib/*|src/*|scripts/check-package-artifact.js|scripts/install-native.js)
+                package_changed="true"
+                ;;
+            esac
+            case "$file" in
+              wpt-manifest.json|scripts/check-ci-evidence.js|scripts/check-wpt-*|scripts/ensure-wpt.js|scripts/print-wpt-manifest.js|scripts/run-wpt-*|scripts/write-ci-evidence.js|scripts/write-wpt-report.js)
+                wpt_changed="true"
                 ;;
             esac
           done < changed-files.txt
 
-          echo "source=$source_changed" >> "$GITHUB_OUTPUT"
-          if [ "$source_changed" = "true" ]; then
-            echo "Source-relevant files changed; running native CI and WPT smoke." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$workflow_changed" = "true" ]; then
+            native_changed="true"
+            package_changed="true"
+            wpt_changed="true"
+          fi
+
+          echo "native=$native_changed" >> "$GITHUB_OUTPUT"
+          echo "package_artifact=$package_changed" >> "$GITHUB_OUTPUT"
+          echo "wpt=$wpt_changed" >> "$GITHUB_OUTPUT"
+
+          if [ "$workflow_changed" = "true" ]; then
+            echo "Workflow/action files changed; running full CI." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$native_changed" = "true" ] || [ "$package_changed" = "true" ] || [ "$wpt_changed" = "true" ]; then
+            echo "Relevant files changed; running targeted CI jobs." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No source-relevant files changed; skipping native CI and WPT smoke." >> "$GITHUB_STEP_SUMMARY"
+            echo "No native, package, or WPT files changed; skipping heavy CI jobs." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   quality:
@@ -86,7 +121,7 @@ jobs:
     name: Package artifact
     runs-on: ubuntu-latest
     needs: [changes, quality]
-    if: needs.changes.outputs.source == 'true'
+    if: needs.changes.outputs.native == 'true' || needs.changes.outputs.package_artifact == 'true'
     timeout-minutes: 30
 
     steps:
@@ -97,15 +132,7 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install Linux build dependencies
-        run: |
-          for attempt in 1 2 3; do
-            if sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev; then
-              exit 0
-            fi
-            sleep $((attempt * 10))
-          done
-          exit 1
+      - uses: ./.github/actions/setup-native-build
 
       - run: npm ci
 
@@ -134,7 +161,7 @@ jobs:
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     needs: [changes, quality]
-    if: needs.changes.outputs.source == 'true'
+    if: needs.changes.outputs.native == 'true'
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -150,51 +177,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          for attempt in 1 2 3; do
-            if sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev; then
-              exit 0
-            fi
-            sleep $((attempt * 10))
-          done
-          exit 1
-
-      - name: Install macOS build dependencies
-        if: runner.os == 'macOS'
-        run: |
-          brew install openssl@3
-          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
-
-      - name: Install Windows build dependencies
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $opensslVersion = "3.6.2"
-          choco install openssl --version $opensslVersion --no-progress -y
-          if ($LASTEXITCODE -ne 0) {
-            throw "Chocolatey failed to install OpenSSL $opensslVersion"
-          }
-          $roots = @(
-            "C:\Program Files\OpenSSL",
-            "C:\Program Files\OpenSSL-Win64",
-            "C:\Program Files\OpenSSL-Win32"
-          )
-          $opensslRoot = $roots | Where-Object {
-            Test-Path (Join-Path $_ "include\openssl\ssl.h")
-          } | Select-Object -First 1
-          if (-not $opensslRoot) {
-            Get-ChildItem "C:\Program Files" -Directory -Filter "OpenSSL*" | Select-Object FullName
-            throw "OpenSSL root was not found"
-          }
-          "OPENSSL_ROOT_DIR=$opensslRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "OPENSSL_INCLUDE_DIR=$opensslRoot\include" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $binDir = Join-Path $opensslRoot "bin"
-          if (Test-Path $binDir) {
-            $binDir | Out-File -FilePath $env:GITHUB_PATH -Append
-            & (Join-Path $binDir "openssl.exe") version
-          }
+      - uses: ./.github/actions/setup-native-build
 
       - run: npm ci
 
@@ -212,7 +195,7 @@ jobs:
     name: WPT smoke
     runs-on: ubuntu-latest
     needs: [changes, quality]
-    if: needs.changes.outputs.source == 'true'
+    if: needs.changes.outputs.native == 'true' || needs.changes.outputs.wpt == 'true'
     timeout-minutes: 30
     env:
       WPT_TEST_TIMEOUT_MS: 180000
@@ -228,15 +211,7 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install Linux build dependencies
-        run: |
-          for attempt in 1 2 3; do
-            if sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev; then
-              exit 0
-            fi
-            sleep $((attempt * 10))
-          done
-          exit 1
+      - uses: ./.github/actions/setup-native-build
 
       - run: npm ci
 

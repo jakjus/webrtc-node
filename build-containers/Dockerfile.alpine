@@ -11,6 +11,7 @@ RUN apk add --no-cache \
   linux-headers \
   make \
   ninja \
+  openssl \
   openssl-dev \
   openssl-libs-static \
   python3
