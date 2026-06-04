@@ -21,11 +21,15 @@ Before opening a pull request, run:
 
 ```sh
 npm run check
+npm run native:check
+npm run build
 npm test
 npm run api:check
 npm run types:check
 npm run pack:check
 npm run wpt:selection:check
+npm run wpt:smoke
+npm run wpt:smoke:check
 ```
 
 Run the selected WPT suite for WebRTC behavior changes:
@@ -34,6 +38,9 @@ Run the selected WPT suite for WebRTC behavior changes:
 npm run wpt:test
 npm run wpt:check:strict
 ```
+
+For targeted debugging, pass either a WPT file or a `file#subtest` selector to
+`npm run wpt:test` before running the full selected suite.
 
 ## Pull Requests
 

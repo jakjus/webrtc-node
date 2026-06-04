@@ -1,9 +1,9 @@
 # Security Policy
 
-`@mertushka/webrtc-node` is currently a pre-release, data-channel-first WebRTC
-binding. Do not deploy it as a security boundary until the selected WPT suite,
-native lifetime behavior, and cross-platform CI evidence are stable for your
-use case.
+`@mertushka/webrtc-node` is a data-channel-first native WebRTC binding for
+Node.js. It is published, but it should not be treated as a security boundary
+for untrusted traffic without validating the selected WPT suite, native
+lifetime behavior, and cross-platform CI evidence against your use case.
 
 ## Reporting
 
@@ -21,5 +21,6 @@ Include:
 
 ## Supported Versions
 
-No released versions are supported yet. Security support begins after the first
-tagged release.
+The current `0.1.x` release line receives security fixes while it remains the
+published `latest` line on npm. Prerelease versions published under non-latest
+distribution tags receive security fixes only when explicitly announced.

@@ -41,17 +41,23 @@ npm run wpt:check:strict
 npm run wpt:report -- --output wpt-report.md
 ```
 
-The default `CI` workflow keeps pull requests fast by running the native
-OS/Node matrix with unit tests plus a small WPT smoke subset on Ubuntu Node 24.
+The default `CI` workflow keeps pull requests fast by always running the
+Quality job, then classifying changed files into native, package-artifact, and
+WPT buckets. Native changes run the OS/Node matrix with unit tests. Native or
+WPT changes run a small WPT smoke subset on Ubuntu Node 24. Native or package
+artifact changes run a clean packed-source build check.
+
+The current classifier treats these paths as native-relevant: `lib/`, `src/`,
+`test/`, `CMakeLists.txt`, package files, `index.d.ts`,
+`scripts/check-api-surface.js`, and `scripts/check-native-integration.js`.
+Package-artifact paths include package files, `CMakeLists.txt`, `lib/`, `src/`,
+`scripts/check-package-artifact.js`, and `scripts/install-native.js`. WPT paths
+include `wpt-manifest.json` and the WPT/reporting/evidence scripts. Workflow
+or action changes run all three buckets. Documentation and agent-note changes
+normally run only the Quality job.
+
 The full selected WPT matrix is in the `Conformance` workflow, which runs on
 manual dispatch, weekly schedule, and version tags.
-
-Only source-relevant changes run the native matrix, package-artifact source
-build, and WPT smoke job. Source-relevant paths include `lib/`, `src/`,
-`scripts/`, `test/`, `examples/`, `build-containers/`, `CMakeLists.txt`,
-package files, TypeScript/API config, Biome config, and `wpt-manifest.json`.
-Documentation, agent notes, and workflow-only maintenance changes run the
-lightweight quality gate only.
 
 By default, WPT is fetched into the ignored `wpt/` cache. Set `WPT_DIR` to use a
 different pinned checkout.
