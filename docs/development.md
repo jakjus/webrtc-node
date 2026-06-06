@@ -73,7 +73,8 @@ Google Chrome must be installed. Set `CHROME_PATH` when it is not in a standard
 platform location. The suite has no retries and covers both offerer directions,
 negotiated and in-band channels, reliability options, text/binary/Blob payloads,
 message-size limits, buffering, close propagation, repeated connections, and
-ICE restart behavior.
+ICE restart behavior. Scenario groups run in fresh processes so unrelated tests
+do not share libdatachannel's process-global transport state.
 
 The full selected WPT matrix is in the `Conformance` workflow, which runs on
 manual dispatch, weekly schedule, and version tags.
