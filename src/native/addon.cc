@@ -861,15 +861,10 @@ struct PeerBinding : public std::enable_shared_from_this<PeerBinding> {
 	}
 
 	void ClosePeer() {
-		auto self = shared_from_this();
-		std::thread([self = std::move(self)]() {
-			try {
-				// libdatachannel's public close() is graceful SCTP shutdown; releasing the
-				// peer runs the destructor path that closes transports and joins processors.
-				self->Shutdown(true);
-			} catch (...) {
-			}
-		}).detach();
+		// Releasing the peer runs libdatachannel's destructor path, which closes
+		// transports and joins processors. Complete it before another peer can be
+		// constructed in the same process.
+		Shutdown(true);
 	}
 
 	void Destroy() {
