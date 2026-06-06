@@ -6,6 +6,7 @@ const { chromium } = require("playwright-core");
 const { RTCPeerConnection } = require("../..");
 
 const DEFAULT_TIMEOUT = Number(process.env.CHROME_E2E_TIMEOUT_MS || 30000);
+const NATIVE_TEARDOWN_SETTLE_MS = 100;
 
 function chromeCandidates() {
   if (process.platform === "win32") {
@@ -400,37 +401,54 @@ async function connectNodeOfferer(page, label = "node-channel", options = {}) {
   await page.evaluate(() => window.chromeE2E.reset());
   const peerConnection = new RTCPeerConnection();
   const channel = peerConnection.createDataChannel(label, options);
-  const offer = await gatherLocalDescription(peerConnection, await peerConnection.createOffer());
-  const answer = await page.evaluate(
-    (remoteOffer) => window.chromeE2E.acceptOffer(remoteOffer),
-    offer,
-  );
-  await peerConnection.setRemoteDescription(answer);
-  await waitForOpen(channel);
-  await page.waitForFunction(() => window.chromeE2E.snapshot().primaryState === "open", null, {
-    timeout: DEFAULT_TIMEOUT,
-  });
-  return { channel, peerConnection };
+  try {
+    const offer = await gatherLocalDescription(peerConnection, await peerConnection.createOffer());
+    const answer = await page.evaluate(
+      (remoteOffer) => window.chromeE2E.acceptOffer(remoteOffer),
+      offer,
+    );
+    await peerConnection.setRemoteDescription(answer);
+    await waitForOpen(channel);
+    await page.waitForFunction(() => window.chromeE2E.snapshot().primaryState === "open", null, {
+      timeout: DEFAULT_TIMEOUT,
+    });
+    return { channel, peerConnection };
+  } catch (error) {
+    const browserState = await page.evaluate(() => window.chromeE2E.snapshot());
+    error.message = `${error.message}; Node=${peerConnection.connectionState}/${peerConnection.iceConnectionState}, channel=${channel.readyState}; Chrome=${browserState.connectionState}/${browserState.iceConnectionState}, channel=${browserState.primaryState}`;
+    await closePair(page, peerConnection);
+    throw error;
+  }
 }
 
 async function connectChromeOfferer(page, label = "chrome-channel", options = {}) {
   await page.evaluate(() => window.chromeE2E.reset());
   const peerConnection = new RTCPeerConnection();
   const channelPromise = waitFor(peerConnection, "datachannel").then(({ channel }) => channel);
-  const offer = await page.evaluate(
-    ({ channelLabel, channelOptions }) =>
-      window.chromeE2E.createOffer(channelLabel, channelOptions),
-    { channelLabel: label, channelOptions: options },
-  );
-  await peerConnection.setRemoteDescription(offer);
-  const answer = await gatherLocalDescription(peerConnection, await peerConnection.createAnswer());
-  await page.evaluate((remoteAnswer) => window.chromeE2E.acceptAnswer(remoteAnswer), answer);
-  const channel = await channelPromise;
-  await waitForOpen(channel);
-  await page.waitForFunction(() => window.chromeE2E.snapshot().primaryState === "open", null, {
-    timeout: DEFAULT_TIMEOUT,
-  });
-  return { channel, peerConnection };
+  try {
+    const offer = await page.evaluate(
+      ({ channelLabel, channelOptions }) =>
+        window.chromeE2E.createOffer(channelLabel, channelOptions),
+      { channelLabel: label, channelOptions: options },
+    );
+    await peerConnection.setRemoteDescription(offer);
+    const answer = await gatherLocalDescription(
+      peerConnection,
+      await peerConnection.createAnswer(),
+    );
+    await page.evaluate((remoteAnswer) => window.chromeE2E.acceptAnswer(remoteAnswer), answer);
+    const channel = await channelPromise;
+    await waitForOpen(channel);
+    await page.waitForFunction(() => window.chromeE2E.snapshot().primaryState === "open", null, {
+      timeout: DEFAULT_TIMEOUT,
+    });
+    return { channel, peerConnection };
+  } catch (error) {
+    const browserState = await page.evaluate(() => window.chromeE2E.snapshot());
+    error.message = `${error.message}; Node=${peerConnection.connectionState}/${peerConnection.iceConnectionState}; Chrome=${browserState.connectionState}/${browserState.iceConnectionState}, channel=${browserState.primaryState}`;
+    await closePair(page, peerConnection);
+    throw error;
+  }
 }
 
 async function closePair(page, peerConnection) {
@@ -440,6 +458,7 @@ async function closePair(page, peerConnection) {
   try {
     await page.evaluate(() => window.chromeE2E.reset());
   } catch {}
+  await new Promise((resolve) => setTimeout(resolve, NATIVE_TEARDOWN_SETTLE_MS));
 }
 
 module.exports = {

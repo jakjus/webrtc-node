@@ -506,18 +506,25 @@ test("Chrome closure propagates to Node", async () => {
 test("20 alternating offerer negotiations remain stable", async () => {
   for (let index = 0; index < 20; index += 1) {
     await withPage(async (page) => {
-      const pair =
-        index % 2 === 0
-          ? await connectNodeOfferer(page, `cycle-${index}`)
-          : await connectChromeOfferer(page, `cycle-${index}`);
+      const offerer = index % 2 === 0 ? "Node" : "Chrome";
+      let pair;
       try {
+        pair =
+          offerer === "Node"
+            ? await connectNodeOfferer(page, `cycle-${index}`)
+            : await connectChromeOfferer(page, `cycle-${index}`);
         const expected = `cycle-${index}`;
         const messagePromise = waitForMessage(pair.channel, (data) => data === expected);
         await page.evaluate((value) => window.chromeE2E.sendString(value), expected);
         await messagePromise;
+      } catch (error) {
+        error.message = `Cycle ${index + 1}/20 (${offerer} offerer): ${error.message}`;
+        throw error;
       } finally {
-        await closeChannelGracefully(page, pair.channel);
-        await closePair(page, pair.peerConnection);
+        if (pair) {
+          await closeChannelGracefully(page, pair.channel);
+          await closePair(page, pair.peerConnection);
+        }
       }
     });
   }
