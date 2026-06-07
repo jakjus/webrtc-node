@@ -36,38 +36,13 @@ struct EventDispatcher;
 struct PeerBinding;
 
 std::atomic<int> nextChannelId{1};
+constexpr auto PEER_CLOSE_TIMEOUT = std::chrono::seconds(5);
 
-struct PeerCloseState {
+struct PeerCloseSignal {
 	std::mutex mutex;
 	std::condition_variable condition;
-	size_t pending = 0;
+	bool closed = false;
 };
-
-PeerCloseState &GetPeerCloseState() {
-	static auto *state = new PeerCloseState();
-	return *state;
-}
-
-void BeginPeerClose() {
-	auto &state = GetPeerCloseState();
-	std::lock_guard<std::mutex> lock(state.mutex);
-	++state.pending;
-}
-
-void FinishPeerClose() {
-	auto &state = GetPeerCloseState();
-	{
-		std::lock_guard<std::mutex> lock(state.mutex);
-		--state.pending;
-	}
-	state.condition.notify_all();
-}
-
-void WaitForPeerClose() {
-	auto &state = GetPeerCloseState();
-	std::unique_lock<std::mutex> lock(state.mutex);
-	state.condition.wait(lock, [&state]() { return state.pending == 0; });
-}
 
 struct PeerTeardownWork {
 	std::shared_ptr<rtc::PeerConnection> peerConnection;
@@ -75,6 +50,17 @@ struct PeerTeardownWork {
 };
 
 void RunPeerTeardown(PeerTeardownWork work) {
+	auto closeSignal = std::make_shared<PeerCloseSignal>();
+	work.peerConnection->onStateChange([closeSignal](rtc::PeerConnection::State state) {
+		if (state != rtc::PeerConnection::State::Closed)
+			return;
+		{
+			std::lock_guard<std::mutex> lock(closeSignal->mutex);
+			closeSignal->closed = true;
+		}
+		closeSignal->condition.notify_all();
+	});
+
 	for (auto &dataChannel : work.dataChannels) {
 		try {
 			dataChannel->close();
@@ -87,10 +73,15 @@ void RunPeerTeardown(PeerTeardownWork work) {
 		work.peerConnection->close();
 	} catch (...) {
 	}
-	// New peers may be constructed once callbacks are detached and native close
-	// has returned. Destruction stays on this thread because processor joins can
-	// be unbounded on the Node event loop.
-	FinishPeerClose();
+
+	{
+		std::unique_lock<std::mutex> lock(closeSignal->mutex);
+		closeSignal->condition.wait_for(lock, PEER_CLOSE_TIMEOUT, [&]() {
+			return closeSignal->closed ||
+			       work.peerConnection->state() == rtc::PeerConnection::State::Closed;
+		});
+	}
+	work.peerConnection->resetCallbacks();
 	work.peerConnection.reset();
 }
 
@@ -905,7 +896,6 @@ rtc::DataChannelInit ToRtcInit(const ChannelOptions &options) {
 struct PeerBinding : public std::enable_shared_from_this<PeerBinding> {
 	static std::shared_ptr<PeerBinding> Create(rtc::Configuration config,
 	                                           std::shared_ptr<EventDispatcher> dispatcher) {
-		WaitForPeerClose();
 		auto binding =
 		    std::shared_ptr<PeerBinding>(new PeerBinding(std::move(config), std::move(dispatcher)));
 		binding->AttachCallbacks();
@@ -980,15 +970,9 @@ private:
 		if (!work)
 			return;
 
-		BeginPeerClose();
-		try {
-			std::thread([work = std::move(*work)]() mutable {
-				RunPeerTeardown(std::move(work));
-			}).detach();
-		} catch (...) {
-			FinishPeerClose();
-			throw;
-		}
+		std::thread([work = std::move(*work)]() mutable {
+			RunPeerTeardown(std::move(work));
+		}).detach();
 	}
 
 	void AttachCallbacks() {
