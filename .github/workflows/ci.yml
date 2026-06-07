@@ -289,4 +289,19 @@ jobs:
             google-chrome-stable --version
           fi
 
-      - run: npm run e2e:chrome
+      - name: Run Chrome E2E
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run e2e:chrome 2>&1 | tee chrome-e2e.log
+
+      - name: Print DTLS failure context
+        if: failure()
+        shell: bash
+        run: grep -n -B 120 -A 40 -E "fatal I/O error|DTLS transport initialization failed" chrome-e2e.log || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: chrome-e2e-log
+          path: chrome-e2e.log
