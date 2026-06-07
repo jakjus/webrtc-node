@@ -1158,10 +1158,7 @@ private:
 			rtc::LocalDescriptionInit init;
 			if (info.Length() > 1)
 				init = ParseLocalDescriptionInit(info[1]);
-			auto descriptionType = ParseDescriptionType(type);
-			// libdatachannel may start DTLS synchronously; SSL_get_error requires a clean queue.
-			ERR_clear_error();
-			binding_->peerConnection->setLocalDescription(descriptionType, init);
+			binding_->peerConnection->setLocalDescription(ParseDescriptionType(type), init);
 			return env.Undefined();
 		} catch (const std::exception &e) {
 			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
@@ -1175,10 +1172,7 @@ private:
 			Napi::Object object = info[0].As<Napi::Object>();
 			std::string type = object.Get("type").ToString().Utf8Value();
 			std::string sdp = object.Get("sdp").ToString().Utf8Value();
-			rtc::Description description(sdp, type);
-			// libdatachannel may start DTLS synchronously; SSL_get_error requires a clean queue.
-			ERR_clear_error();
-			binding_->peerConnection->setRemoteDescription(description);
+			binding_->peerConnection->setRemoteDescription(rtc::Description(sdp, type));
 			return env.Undefined();
 		} catch (const std::exception &e) {
 			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
