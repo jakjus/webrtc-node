@@ -149,6 +149,13 @@ jobs:
 
       - run: npm run pack:check
 
+      - name: Verify static Linux addon isolation
+        shell: bash
+        run: |
+          npm run build -- --CDWEBRTC_NODE_STATIC_OPENSSL=ON
+          npm run prebuild:symbols:check
+          npm run tls:check
+
       - name: Pack source artifact
         id: pack
         shell: bash
@@ -195,6 +202,8 @@ jobs:
       - run: npm run native:check
 
       - run: npm run build
+
+      - run: npm run tls:check
 
       - run: npm test
 

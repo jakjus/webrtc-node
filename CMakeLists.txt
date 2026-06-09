@@ -136,6 +136,17 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   OpenSSL::SSL
 )
 
+if(UNIX AND NOT APPLE)
+  target_compile_options(${PROJECT_NAME} PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+  )
+  target_link_options(${PROJECT_NAME} PRIVATE
+    "LINKER:-Bsymbolic"
+    "LINKER:--exclude-libs,ALL"
+  )
+endif()
+
 if(MSVC)
   target_compile_options(${PROJECT_NAME} PRIVATE /EHsc /bigobj)
 else()

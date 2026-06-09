@@ -47,6 +47,16 @@ requireMatch(
 requireMatch("native install script", JSON.stringify(pkg.scripts || {}), /install-native\.js/);
 requireMatch("prebuild package script", JSON.stringify(pkg.scripts || {}), /package-prebuild\.js/);
 requireMatch("prebuild check script", JSON.stringify(pkg.scripts || {}), /check-prebuilds\.js/);
+requireMatch(
+  "prebuild symbol check script",
+  JSON.stringify(pkg.scripts || {}),
+  /check-linux-addon-symbols\.js/,
+);
+requireMatch(
+  "TLS coexistence check script",
+  JSON.stringify(pkg.scripts || {}),
+  /check-tls-coexistence\.js/,
+);
 requireMatch("native <napi.h> include", addon, /#include\s+<napi\.h>/);
 requireMatch("Node-API module initializer", addon, /\bNODE_API_MODULE\s*\(/);
 requireMatch("ThreadSafeFunction dispatcher", addon, /Napi::ThreadSafeFunction::New/);
@@ -137,6 +147,10 @@ requireMatch(
 requireMatch("Node-API version definition", cmake, /NAPI_VERSION=\$\{WEBRTC_NODE_NAPI_VERSION\}/);
 requireMatch("prebuild napi build version", cmake, /napi_build_version/);
 requireMatch("release static OpenSSL option", cmake, /WEBRTC_NODE_STATIC_OPENSSL/);
+requireMatch("Linux hidden symbol visibility", cmake, /-fvisibility=hidden/);
+requireMatch("Linux hidden inline visibility", cmake, /-fvisibility-inlines-hidden/);
+requireMatch("Linux internal symbol binding", cmake, /"LINKER:-Bsymbolic"/);
+requireMatch("Linux static symbol hiding", cmake, /"LINKER:--exclude-libs,ALL"/);
 requireMatch("node-addon-api include discovery", cmake, /require\('node-addon-api'\)\.include_dir/);
 requireMatch("static libdatachannel target", cmake, /LibDataChannel::LibDataChannelStatic/);
 

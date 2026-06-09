@@ -56,6 +56,8 @@
     "pack:check": "node scripts/check-package-artifact.js",
     "prebuild:package": "node scripts/package-prebuild.js",
     "prebuild:check": "node scripts/check-prebuilds.js",
+    "prebuild:symbols:check": "node scripts/check-linux-addon-symbols.js",
+    "tls:check": "node scripts/check-tls-coexistence.js",
     "api:check": "node scripts/check-api-surface.js",
     "test": "node --test --test-force-exit --test-timeout=30000 test/basic.test.js test/ci-evidence.test.js test/turn.test.js",
     "types:check": "tsc -p tsconfig.types.json",
