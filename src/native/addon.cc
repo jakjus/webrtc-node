@@ -1676,6 +1676,14 @@ void CleanupNative() {
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
 	ConfigureLibDataChannelLogging();
+	// libdatachannel defaults its worker pool to hardware_concurrency per
+	// process, which oversubscribes hosts running many small processes
+	// (e.g. one game room per process). Allow capping it via env var.
+	if (const char *poolSize = std::getenv("WEBRTC_NODE_THREAD_POOL_SIZE")) {
+		int count = std::atoi(poolSize);
+		if (count > 0)
+			rtc::SetThreadPoolSize(static_cast<unsigned int>(count));
+	}
 	NativeDataChannel::Init(env, exports);
 	NativeIceUdpMuxListener::Init(env, exports);
 	NativePeerConnection::Init(env, exports);

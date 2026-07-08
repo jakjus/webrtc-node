@@ -42,6 +42,14 @@
 > dropped, matching unreliable-channel behavior), and the queue is capped at 8192
 > in-flight messages. Reliable bulk-transfer flows should monitor `bufferedAmount` /
 > `bufferedamountlow` as usual, or use upstream instead.
+>
+> **`WEBRTC_NODE_THREAD_POOL_SIZE`** — this fork also lets you cap libdatachannel's
+> worker pool, which upstream leaves at `hardware_concurrency()` per process. Hosts
+> running many small processes (one game room each) oversubscribe badly: on a 10-core
+> machine the 30-connection benchmark above used **115% of a core with the default
+> pool vs 51% with `WEBRTC_NODE_THREAD_POOL_SIZE=2`** — identical throughput and
+> latency, the difference is pure inter-worker contention. Set it to 1–2 for
+> room-sized workloads; leave unset for high-fan-out single-process servers.
 
 ```sh
 npm install @mertushka/webrtc-node
