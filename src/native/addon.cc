@@ -43,6 +43,65 @@ uint32_t AllocateChannelId() {
 	return id;
 }
 
+// Drains queued datachannel sends on a dedicated thread so the SCTP/DTLS/
+// sendto work never runs on the JS event loop. A single FIFO worker preserves
+// per-channel send ordering; rtc::DataChannel::send is thread-safe.
+class AsyncSender {
+public:
+	static AsyncSender &Instance() {
+		// Intentionally leaked: avoids static-destruction races with the
+		// detached worker at process exit.
+		static AsyncSender *instance = new AsyncSender();
+		return *instance;
+	}
+
+	void Enqueue(std::shared_ptr<rtc::DataChannel> dc, rtc::binary payload) {
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			// Overload policy: drop new messages beyond the cap. Suits
+			// unreliable game traffic; reliable flows should watch
+			// bufferedAmount/bufferedamountlow as usual.
+			if (queue_.size() >= kMaxQueue)
+				return;
+			queue_.emplace_back(std::move(dc), std::move(payload));
+		}
+		condition_.notify_one();
+	}
+
+private:
+	using Item = std::pair<std::shared_ptr<rtc::DataChannel>, rtc::binary>;
+	static constexpr size_t kMaxQueue = 8192;
+
+	AsyncSender() {
+		std::thread([this]() { Run(); }).detach();
+	}
+
+	void Run() {
+		std::vector<Item> batch;
+		for (;;) {
+			{
+				std::unique_lock<std::mutex> lock(mutex_);
+				condition_.wait(lock, [this]() { return !queue_.empty(); });
+				batch.swap(queue_);
+			}
+			for (auto &item : batch) {
+				try {
+					if (item.first->isOpen())
+						item.first->send(item.second.data(), item.second.size());
+				} catch (...) {
+					// Channel closed or transport failure: drop, matching
+					// unreliable-channel semantics.
+				}
+			}
+			batch.clear();
+		}
+	}
+
+	std::vector<Item> queue_;
+	std::mutex mutex_;
+	std::condition_variable condition_;
+};
+
 struct PeerCloseSignal {
 	std::mutex mutex;
 	std::condition_variable condition;
@@ -783,8 +842,11 @@ private:
 				throw std::invalid_argument("sendBinary expects a Uint8Array");
 			auto view = info[0].As<Napi::Uint8Array>();
 			const auto *bytes = reinterpret_cast<const rtc::byte *>(view.Data());
-			bool sent = binding_->dataChannel->send(bytes, view.ByteLength());
-			return Napi::Boolean::New(env, sent);
+			// Copy out of the V8-owned buffer and hand off to the send
+			// worker: the SCTP/DTLS/socket work must not block the JS thread.
+			rtc::binary payload(bytes, bytes + view.ByteLength());
+			AsyncSender::Instance().Enqueue(binding_->dataChannel, std::move(payload));
+			return Napi::Boolean::New(env, true);
 		} catch (const std::exception &e) {
 			Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
 			return env.Undefined();

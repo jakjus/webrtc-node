@@ -18,6 +18,31 @@
   and validated with 620 selected Web Platform Tests subtests.
 </p>
 
+> [!NOTE]
+> **Fork of [mertushka/webrtc-node](https://github.com/mertushka/webrtc-node) with asynchronous binary sends.**
+>
+> Upstream runs the full SCTP → DTLS-encrypt → `sendto()` stack synchronously inside
+> `dataChannel.send()`, on the JS event-loop thread. Under game-server broadcast loads
+> (e.g. a [HaxBall](https://www.haxball.com/) headless host relaying to a 30-player room at 60Hz)
+> that steals milliseconds per tick from the event loop.
+>
+> This fork queues binary payloads to a dedicated native send thread (FIFO — per-channel
+> ordering preserved; `rtc::DataChannel::send` is thread-safe). Measured on a 29-peer
+> 60Hz broadcast of 140-byte messages (Apple Silicon, loopback):
+>
+> | | per `send()` on JS thread | per broadcast tick | tick p99 | max event-loop lag |
+> |---|---:|---:|---:|---:|
+> | upstream v0.2.1 | 47.8µs | 1.39ms | 3.7ms | 7.8–18.1ms |
+> | this fork | **1.9µs** | **0.054ms** | **0.12ms** | **2.9–3.3ms** |
+>
+> Delivery verified at 100% of sent messages under the same load. Total process CPU is
+> unchanged — the crypto/syscall work moves to a spare core instead of blocking JS.
+>
+> Semantics notes: `send()` no longer surfaces synchronous transport errors (they are
+> dropped, matching unreliable-channel behavior), and the queue is capped at 8192
+> in-flight messages. Reliable bulk-transfer flows should monitor `bufferedAmount` /
+> `bufferedamountlow` as usual, or use upstream instead.
+
 ```sh
 npm install @mertushka/webrtc-node
 ```
