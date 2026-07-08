@@ -43,6 +43,23 @@ uint32_t AllocateChannelId() {
 	return id;
 }
 
+// Maximum accepted inbound datachannel message size in bytes, read once from
+// WEBRTC_NODE_MAX_INBOUND_MESSAGE_SIZE. 0 (unset/invalid) disables the cap and
+// preserves upstream behavior. Larger messages are dropped before reaching JS.
+size_t MaxInboundMessageSize() {
+	static const size_t value = []() -> size_t {
+		const char *env = std::getenv("WEBRTC_NODE_MAX_INBOUND_MESSAGE_SIZE");
+		if (!env)
+			return 0;
+		char *end = nullptr;
+		long long parsed = std::strtoll(env, &end, 10);
+		if (end == env || parsed <= 0)
+			return 0;
+		return static_cast<size_t>(parsed);
+	}();
+	return value;
+}
+
 // Drains queued datachannel sends on a dedicated thread so the SCTP/DTLS/
 // sendto work never runs on the JS event loop. A single FIFO worker preserves
 // per-channel send ordering; rtc::DataChannel::send is thread-safe.
@@ -754,6 +771,18 @@ private:
 
 		dataChannel->onMessage([weak](rtc::message_variant data) {
 			if (auto self = weak.lock()) {
+				// Drop hostile/oversized inbound messages before allocating a
+				// V8 copy. A remote peer can otherwise force large per-message
+				// heap allocations on the host with a single datachannel frame.
+				// Cap is opt-in via WEBRTC_NODE_MAX_INBOUND_MESSAGE_SIZE (bytes).
+				const size_t maxInbound = MaxInboundMessageSize();
+				if (maxInbound > 0) {
+					size_t size = std::holds_alternative<std::string>(data)
+					                  ? std::get<std::string>(data).size()
+					                  : std::get<rtc::binary>(data).size();
+					if (size > maxInbound)
+						return;
+				}
 				NativeEvent event;
 				event.target = "datachannel";
 				event.type = "message";
