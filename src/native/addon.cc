@@ -60,6 +60,31 @@ size_t MaxInboundMessageSize() {
 	return value;
 }
 
+// Fixed UDP port range for ICE, read once from WEBRTC_NODE_PORT_RANGE in the
+// form "begin-end" (e.g. "40000-40999"). Unset/invalid disables the constraint
+// and preserves upstream behavior (OS-assigned ephemeral ports). Ignored when
+// ICE UDP mux is active, which pins its own single port.
+std::optional<std::pair<uint16_t, uint16_t>> ConfiguredUdpPortRange() {
+	static const std::optional<std::pair<uint16_t, uint16_t>> value =
+	    []() -> std::optional<std::pair<uint16_t, uint16_t>> {
+		const char *env = std::getenv("WEBRTC_NODE_PORT_RANGE");
+		if (!env)
+			return std::nullopt;
+		char *end = nullptr;
+		long begin = std::strtol(env, &end, 10);
+		if (end == env || *end != '-')
+			return std::nullopt;
+		const char *second = end + 1;
+		long rangeEnd = std::strtol(second, &end, 10);
+		if (end == second || *end != '\0')
+			return std::nullopt;
+		if (begin < 1 || begin > 65535 || rangeEnd < begin || rangeEnd > 65535)
+			return std::nullopt;
+		return std::make_pair(static_cast<uint16_t>(begin), static_cast<uint16_t>(rangeEnd));
+	}();
+	return value;
+}
+
 // Drains queued datachannel sends on a dedicated thread so the SCTP/DTLS/
 // sendto work never runs on the JS event loop. A single FIFO worker preserves
 // per-channel send ordering; rtc::DataChannel::send is thread-safe.
@@ -1039,6 +1064,13 @@ rtc::Configuration ParseConfiguration(const Napi::CallbackInfo &info) {
 			config.portRangeBegin = *port;
 			config.portRangeEnd = *port;
 		}
+	} else if (auto range = ConfiguredUdpPortRange()) {
+		// Constrain ICE to a fixed UDP port range (WEBRTC_NODE_PORT_RANGE=
+		// "begin-end") so hosts can firewall a known window instead of the
+		// whole ephemeral range. Unlike ICE UDP mux this keeps the standard
+		// one-socket-per-connection path; only the port selection changes.
+		config.portRangeBegin = range->first;
+		config.portRangeEnd = range->second;
 	}
 	if (input.Has("disableFingerprintVerification") &&
 	    input.Get("disableFingerprintVerification").IsBoolean())
