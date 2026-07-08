@@ -85,6 +85,21 @@ std::optional<std::pair<uint16_t, uint16_t>> ConfiguredUdpPortRange() {
 	return value;
 }
 
+// Local address to bind ICE gathering to, read once from
+// WEBRTC_NODE_BIND_ADDRESS. Setting "0.0.0.0" restricts gathering to IPv4 so
+// every candidate stays inside WEBRTC_NODE_PORT_RANGE (IPv6 host candidates
+// would otherwise bind ephemeral ports outside the window). Empty/unset keeps
+// upstream behavior (bind to any address, both families).
+const std::optional<std::string> &ConfiguredBindAddress() {
+	static const std::optional<std::string> value = []() -> std::optional<std::string> {
+		const char *env = std::getenv("WEBRTC_NODE_BIND_ADDRESS");
+		if (!env || env[0] == '\0')
+			return std::nullopt;
+		return std::string(env);
+	}();
+	return value;
+}
+
 // Drains queued datachannel sends on a dedicated thread so the SCTP/DTLS/
 // sendto work never runs on the JS event loop. A single FIFO worker preserves
 // per-channel send ordering; rtc::DataChannel::send is thread-safe.
@@ -1072,6 +1087,13 @@ rtc::Configuration ParseConfiguration(const Napi::CallbackInfo &info) {
 		config.portRangeBegin = range->first;
 		config.portRangeEnd = range->second;
 	}
+	// The port range applies to IPv4 gathering; libjuice still gathers an IPv6
+	// host candidate on an ephemeral (out-of-range) port when the host has
+	// IPv6, defeating a single-window firewall rule. WEBRTC_NODE_BIND_ADDRESS
+	// (e.g. "0.0.0.0") pins gathering to one local address family so every
+	// candidate stays inside the firewalled window. Unset = upstream (any).
+	if (const auto &bind = ConfiguredBindAddress())
+		config.bindAddress = *bind;
 	if (input.Has("disableFingerprintVerification") &&
 	    input.Get("disableFingerprintVerification").IsBoolean())
 		config.disableFingerprintVerification =
