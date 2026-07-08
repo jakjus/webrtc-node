@@ -1,5 +1,5 @@
 {
-  "name": "@jakjus/webrtc-node",
+  "name": "@mertushka/webrtc-node",
   "version": "0.2.2-async.0",
   "description": "W3C-style RTCPeerConnection and RTCDataChannel for Node.js, backed by libdatachannel.",
   "author": "mertushka",
