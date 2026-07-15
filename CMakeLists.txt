@@ -29,8 +29,19 @@ else()
   set(WEBRTC_NODE_NAPI_VERSION 8)
 endif()
 
-set(WEBRTC_NODE_STATIC_OPENSSL OFF CACHE BOOL
-    "Prefer static OpenSSL libraries when building release prebuilds.")
+# Default ON: this is a Node native addon that shares a process with Node's own
+# statically-linked OpenSSL. Dynamically linking the system libssl/libcrypto
+# loads a SECOND OpenSSL into the process, and its global init (e.g. importing
+# the DTLS certificate at PeerConnection creation) corrupts the state of Node's
+# OpenSSL — silently killing unrelated live TLS sockets such as a `wss://`
+# signalling connection (observed: HaxBall room WS dies with code 1006 the
+# instant a peer's offer is processed). Static-linking OpenSSL keeps Node's the
+# only instance in the process. CI/release prebuilds already force this ON; the
+# from-source install fallback previously did not, so every source build was
+# broken. Requires static libcrypto.a/libssl.a at build time (libssl-dev ships
+# them on Debian/Ubuntu); set to OFF only if you understand the clash above.
+set(WEBRTC_NODE_STATIC_OPENSSL ON CACHE BOOL
+    "Statically link OpenSSL to avoid clashing with the host runtime's OpenSSL.")
 
 if(NOT DEFINED CMAKE_JS_INC)
   message(FATAL_ERROR "This project is intended to be built through cmake-js.")
