@@ -1,8 +1,9 @@
 <h1 align="center">webrtc-node</h1>
 
 <p align="center">
-  <a href="https://github.com/mertushka/webrtc-node/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mertushka/webrtc-node/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://www.npmjs.com/package/@mertushka/webrtc-node"><img alt="npm" src="https://img.shields.io/npm/v/@mertushka/webrtc-node"></a>
+  <a href="https://github.com/jakjus/webrtc-node/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jakjus/webrtc-node/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="fork version" src="https://img.shields.io/badge/fork-0.2.2--async.0-blue">
+  <img alt="install" src="https://img.shields.io/badge/install-github%3Ajakjus%2Fwebrtc--node-lightgrey">
   <img alt="Node.js" src="https://img.shields.io/badge/node-%3E%3D20-339933">
   <img alt="API" src="https://img.shields.io/badge/API-W3C--style-0a7">
   <img alt="Data Channels" src="https://img.shields.io/badge/scope-data%20channels-4c1">
@@ -19,29 +20,70 @@
 </p>
 
 > [!NOTE]
-> **Fork of [mertushka/webrtc-node](https://github.com/mertushka/webrtc-node) with asynchronous binary sends.**
+> **This is a fork of [mertushka/webrtc-node](https://github.com/mertushka/webrtc-node),
+> tuned for hosts that serve many untrusted peers from one process** — the shape of a
+> [HaxBall](https://www.haxball.com/) headless room. Five changes, all opt-in or
+> behaviour-preserving when unconfigured:
 >
-> Upstream runs the full SCTP → DTLS-encrypt → `sendto()` stack synchronously inside
-> `dataChannel.send()`, on the JS event-loop thread. Under game-server broadcast loads
-> (e.g. a [HaxBall](https://www.haxball.com/) headless host relaying to a 30-player room at 60Hz)
-> that steals milliseconds per tick from the event loop.
+> 1. **Async binary sends.** Upstream runs the whole SCTP → DTLS-encrypt → `sendto()`
+>    stack synchronously inside `dataChannel.send()`, on the JS event-loop thread. This
+>    fork queues binary payloads to a dedicated native send thread (FIFO, so per-channel
+>    ordering is preserved; `rtc::DataChannel::send` is thread-safe). Per-send cost on the
+>    JS thread drops **47.8µs → 1.9µs**.
+> 2. **`WEBRTC_NODE_THREAD_POOL_SIZE`** caps libdatachannel's worker pool, which upstream
+>    leaves at `hardware_concurrency()` *per process* — mostly inter-worker contention when
+>    you run one process per room.
+> 3. **Malformed-packet hardening.** A message listener that throws no longer unwinds the
+>    flush loop or escapes as a fatal `uncaughtException`, and
+>    **`WEBRTC_NODE_MAX_INBOUND_MESSAGE_SIZE`** drops oversized frames natively before the
+>    V8 copy.
+> 4. **`WEBRTC_NODE_PORT_RANGE`** / **`WEBRTC_NODE_BIND_ADDRESS`** pin ICE to a known UDP
+>    window and to one address family, so a host firewall or a provider's DDoS filter has
+>    something specific to target.
+> 5. **OpenSSL is linked statically by default**, so the addon stops clobbering whatever
+>    OpenSSL the host process already loaded.
 >
-> This fork queues binary payloads to a dedicated native send thread (FIFO — per-channel
-> ordering preserved; `rtc::DataChannel::send` is thread-safe), and adds
-> **`WEBRTC_NODE_THREAD_POOL_SIZE`** to cap libdatachannel's worker pool, which upstream
-> leaves at `hardware_concurrency()` per process. Combined effect on a 30-connection
-> game-server workload: **~110% → 42% of one core** at identical throughput, with max
-> event-loop lag down from 18ms to ~3ms. Full numbers in
-> [Fork Benchmarks](#fork-benchmarks).
+> Combined effect on a 30-connection game-server workload: **~110% → 42% of one core** at
+> identical throughput, with max event-loop lag down from 18ms to ~3ms. Full numbers in
+> [Fork Benchmarks](#fork-benchmarks); knobs in [Fork Configuration](#fork-configuration).
 >
-> Semantics notes: `send()` no longer surfaces synchronous transport errors (they are
-> dropped, matching unreliable-channel behavior), and the queue is capped at 8192
-> in-flight messages. Reliable bulk-transfer flows should monitor `bufferedAmount` /
-> `bufferedamountlow` as usual, or use upstream instead.
+> **Semantics to know before adopting:** `send()` no longer surfaces synchronous transport
+> errors (they are dropped, matching unreliable-channel behaviour), and the queue is capped
+> at 8192 in-flight messages. Reliable bulk-transfer flows should monitor `bufferedAmount` /
+> `bufferedamountlow` as usual, or use upstream instead. A *sustained* flood of
+> throwing packets still degrades delivery through the flush state machine — that is a DoS,
+> not a crash, and it is shared with upstream.
+>
+> **In production:** 22 HaxBall rooms (ar.jakjus.com and jjrs.jakjus.com) have run on this
+> fork since 2026-07-27.
+
+## Install
+
+This fork is **not published to npm** — `npm install @mertushka/webrtc-node` gets you
+upstream. Install it from GitHub:
 
 ```sh
-npm install @mertushka/webrtc-node
+npm install github:jakjus/webrtc-node
 ```
+
+The package name is deliberately left as `@mertushka/webrtc-node` so the fork is a true
+drop-in. If you depend on it transitively (e.g. through `haxball.js`, which pulls
+`@mertushka/webrtc-node` itself), add an override so *both* paths resolve to the fork:
+
+```json
+{
+  "dependencies": {
+    "@mertushka/webrtc-node": "github:jakjus/webrtc-node"
+  },
+  "overrides": {
+    "@mertushka/webrtc-node": "github:jakjus/webrtc-node"
+  }
+}
+```
+
+There are no prebuilds for the fork, so installing compiles the native addon from source
+(CMake, a C++17 compiler, and OpenSSL headers; a few minutes). The result is Node-API, so
+the built addon stays valid across Node major versions.
 
 ## Usage
 
@@ -63,11 +105,54 @@ channel.addEventListener("message", (event) => {
 See [examples/datachannel.js](examples/datachannel.js) for a complete local
 offer/answer exchange.
 
+## Fork Configuration
+
+Every knob below is read **once per process, at addon load** — set them before requiring
+the module. Leaving one unset preserves upstream behaviour exactly, so you can adopt them
+one at a time.
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `WEBRTC_NODE_THREAD_POOL_SIZE` | `hardware_concurrency()` | libdatachannel worker threads for this process. Use `1`–`2` when you run one process per room; leave unset for a single high-fan-out server. |
+| `WEBRTC_NODE_MAX_INBOUND_MESSAGE_SIZE` | `0` (no cap) | Bytes. Inbound frames larger than this are dropped natively, before the V8 copy. |
+| `WEBRTC_NODE_PORT_RANGE` | unset (ephemeral) | `"begin-end"`, e.g. `"40000-40999"`. Constrains ICE to a fixed UDP window. Ignored when ICE UDP mux is active, since that pins its own single port. |
+| `WEBRTC_NODE_BIND_ADDRESS` | unset (any, both families) | Local address for ICE gathering. Set `0.0.0.0` to restrict to IPv4 — otherwise IPv6 host candidates bind ephemeral ports *outside* `WEBRTC_NODE_PORT_RANGE` and escape your firewall window. |
+
+Setting a port range without also setting `WEBRTC_NODE_BIND_ADDRESS=0.0.0.0` on a
+dual-stack host is the one combination that quietly does not do what you want.
+
+### Containing listener exceptions
+
+A message listener that throws is reported out of band instead of escaping as a fatal
+`uncaughtException`, and the offending message is dropped while delivery to other peers
+continues. Subscribe to see them; without a subscriber they go to a throttled
+`console.error`:
+
+```js
+process.on("webrtc-node:listenerError", (error) => {
+  metrics.increment("webrtc.listener_error");
+  console.error("listener threw:", error);
+});
+```
+
+### Building
+
+OpenSSL is linked statically by default (`WEBRTC_NODE_STATIC_OPENSSL=ON`) so the addon
+does not clobber the OpenSSL already loaded by the host process. To link dynamically
+against the system OpenSSL instead:
+
+```sh
+npx cmake-js rebuild --CDWEBRTC_NODE_STATIC_OPENSSL=OFF
+```
+
 ## Supported Platforms
 
-Node.js 20 or newer is required. The npm package downloads a matching Node-API
-prebuild when available, verifies its SHA-256 digest and target, then falls back
-to a `cmake-js` source build.
+Node.js 20 or newer is required.
+
+Upstream's npm package downloads a matching Node-API prebuild when available, verifies its
+SHA-256 digest and target, then falls back to a `cmake-js` source build. **This fork
+publishes no prebuilds**, so a GitHub install always takes the source-build path — the
+platforms below are the ones it is expected to build on, not ones with a binary waiting.
 
 | OS | Prebuild targets | Node 20 | Node 22 | Node 24 |
 | --- | --- | --- | --- | --- |
